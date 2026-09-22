@@ -1,12 +1,12 @@
 <h1 align="center">Chat Timeline File Diff Viewer</h1>
 
 <p align="center">
-  A <b>Files</b> tab for the DeepSeek Harness web UI that shows every file change in a
+  A <b>Diff</b> tab for the DeepSeek Harness web UI that shows every file change in a
   session as diffs, grouped under the message that caused it.<br>
   <a href="LICENSE"><img alt="license" src="https://badgen.net/badge/license/MIT/blue"></a>
 </p>
 
-The feature is simple, you can see each file change per your conversation on your "Files" tab.
+The feature is simple, you can see each file change per your conversation on your "Diff" tab.
 
 <img width="1311" height="851" alt="image" src="https://github.com/user-attachments/assets/bb7d7938-4664-4679-be91-195af7e720b4" />
 
@@ -34,7 +34,7 @@ The following is the llm's gentle explanation.
 
 DeepSeek Harness already renders a diff on each `write`/`edit` tool card. What it
 does not give you is the session-wide picture: *which files did this conversation
-touch, and what is the total change to each of them?* This plugin adds a **Files**
+touch, and what is the total change to each of them?* This plugin adds a **Diff**
 view alongside Chat and Trajectory that answers exactly that, in two modes:
 
 - **Timeline** — change entries grouped under the user message that prompted them.
@@ -65,7 +65,7 @@ dsh plugin --profile web add "github:tanaka774/dsh-timeline-diff"
 
 Then **restart `dsh web`** — bundle layers compose at boot, so a running server will
 not pick the plugin up until it restarts. After the restart, open any session and
-pick the **Files** tab in the header (rightmost, after Chat and Trajectory).
+pick the **Diff** tab in the header (rightmost, after Chat and Trajectory).
 
 Pin a commit if you want reproducible installs:
 
@@ -96,7 +96,7 @@ supported form.
 
 | Surface | What it adds |
 |---|---|
-| `conversation.view` slot | A **Files** tab in the session header, with Timeline and File modes |
+| `conversation.view` slot | A **Diff** tab in the session header, with Timeline and File modes |
 | Per-message aggregation | `Σ path` rows: one diff per file per message window, with `+a −b` |
 | Session-cumulative diffs | One diff per file from conversation start to session end |
 | Sticky headers | The current message card and file name stay pinned while scrolling |

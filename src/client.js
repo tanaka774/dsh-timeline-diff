@@ -106,7 +106,7 @@ const CSS = `
 .fd-line-add .fd-sign { color: var(--dsw-alias-state-success-primary); }
 .fd-line-del .fd-sign { color: var(--dsw-alias-state-error-primary); }
 /* Tab placement is owned by the slot registry: the harness sorts conversation.view
-   entries by their order field (chat 0, trajectory 10, files 20), so the Files tab
+   entries by their order field (chat 0, trajectory 10, diff 20), so the Diff tab
    already renders rightmost. Do NOT reorder the tablist with positional CSS here —
    that assumes a fixed DOM order and flips the tabs whenever the harness changes it. */
 `
@@ -1009,12 +1009,12 @@ const plugin = {
 
     slots.inject('conversation.view', () => slots.register({
       name: 'conversation.view',
-      id: 'files',
+      id: 'diff',
       order: 20,
-      label: () => 'Files',
+      label: () => 'Diff',
       inject: (sessionId) => {
         const session = ctx.sessions.binding(sessionId)?.session
-        if (session === undefined) throw new Error(`files view: session "${sessionId}" is unavailable`)
+        if (session === undefined) throw new Error(`diff view: session "${sessionId}" is unavailable`)
         return {
           loadOlder: () => session.loadOlder(),
         }

@@ -219,6 +219,30 @@ dynamic payload where `require` does not exist at all, `MarkdownText` stays `nul
 `AnswerText` renders the message as pre-wrapped plain text instead. Degrading a card is
 acceptable; failing the view is not.
 
+`MarkdownText` is **not** usable with `text` alone. Its chrome labels are read without a
+guard, from the render context the Chat tab fills in with `markdownLabels(t)`:
+
+```js
+// client/ui-chat — and the shell's own markdown element renderers
+{ code: { copyLabel, copiedLabel }, footnotes }
+```
+
+The fenced-code element renders
+
+```js
+d.jsx(CodeBlock, { code, lang, streaming, copyLabel: i.labels.code.copyLabel, copiedLabel: i.labels.code.copiedLabel })
+```
+
+so a single fenced block in an answer — with or without a language — throws
+`Cannot read properties of undefined (reading 'code')` when `labels` is omitted, and
+the footnote heading reads `labels.footnotes` the same way. That is exactly what
+happened: the first answer card opened in a browser blanked the tab, because React
+unmounts the tree on an uncaught render error. The plugin now ships the same
+`MARKDOWN_LABELS` object, and `AnswerText` wraps the renderer in `MarkdownBoundary` —
+a one-method error boundary — so a renderer that throws anyway degrades to the plain
+text instead of the tab the way the no-renderer arm already did. The boundary is keyed
+by `text`, so a message paged in later retries Markdown after an earlier preview failed.
+
 Two notes for whoever touches this next:
 
 - The primitives' Markdown renderer emits semantic elements with almost no class names
@@ -227,6 +251,52 @@ Two notes for whoever touches this next:
   spacing of its own.
 - It is the same component in both surfaces — the header card and the rail note — so a
   change to one answer's rendering is a change to both.
+
+### Highlighting the diff with the sidebar's own code surface
+
+The sidebar's file preview highlights code in `CodeBody`
+(`@deepseek-ai/dsh-client-ui-sidebar-documentpreview`), which renders
+`ui-primitives`' `CodeBlock` — Shiki, with each grammar fetched lazily by the
+primitive itself. `CodeBlock` comes from the **same static module table** as
+`MarkdownText`, so the Diff tab reaches the identical component and a line of code
+carries the same colors in both places. The suffix → grammar table is
+documentpreview's own `languageForPath`, replicated because it is not exported:
+without it `CodeBlock` would be handed `js`/`ts`/`py` and other spellings it does
+not accept.
+
+Shiki highlights a document, not a line, so the unit here is the **patch run**:
+`rowGroups` collects consecutive rows of one kind (the context block, the
+deletions, the insertions) and each run becomes one `CodeBlock`. That keeps
+multi-line constructs inside a run in context and keeps the instance count near the
+hunk count instead of the line count. The trade-off — a construct that straddles a
+run boundary is tokenized in two pieces — is stated in the README.
+
+Three details make the diff backgrounds possible at all:
+
+- `lineNumbers` is passed **not for numbers but for the layout it selects**. The
+  primitive's numbered CSS turns `pre code > .line` into a block (`display: block`,
+  `white-space: var(--dsl-code-block-line-white-space, pre-wrap)`), which drops the
+  newline text nodes between the line spans. Without that, a per-line background
+  could not be painted and there would be no `::before` gutter to hold a sign.
+  `--dsl-code-block-line-number-width` is set inline by the primitive from the run
+  length, so the gutter widens with the run; the plugin stylesheet replaces only the
+  `::before` content (a `+`/`-` in the diff's own colors) and the line background.
+- The banner (`data-code-block-banner`: grammar name + copy) is hidden, and the
+  block's background, border radius, and margins are reset through the
+  `--dsl-code-block-*` custom properties **on the block element itself** — the
+  primitive declares those on the block, so setting them on an ancestor would be
+  overridden.
+- The plugin's `<style>` is appended to `head` after the shell's stylesheet, so an
+  equal-specificity selector here would already win; the `.fd-code` selectors are
+  written at higher specificity anyway, so the override does not rest on load order.
+
+Degradation has the same shape as Markdown: no `CodeBlock`, or no grammar for the
+suffix, and `plainRow` renders exactly the rows the view drew before highlighting
+existed, signs and tints included. The dynamic payload has no `require`, so it
+always takes that path — the guarded lookup is mirrored there anyway, which is what
+keeps `port-from-dynamic.mjs` byte-exact. The mapping and the run grouping live in
+the `__fd-code-begin/end` block, which `scripts/check-client.mjs` slices out and
+exercises with a stub React and a stub `CodeBlock`.
 
 ### Degradation
 
@@ -330,12 +400,37 @@ untouched):
 12. The dynamic-payload mirror is verified by round-trip: reverse the five port
     transformations into `dynamic/plugin-client.js`, re-run `port-from-dynamic.mjs`, and
     require it to reproduce `src/client.js` byte for byte.
+13. **Highlight check** (added with the highlighted rows): `scripts/check-client.mjs`
+    slices the `__fd-code-begin/end` block out of `src/client.js` and exercises it with a
+    stub React and a stub `CodeBlock` — the suffix map (including a Windows path, an
+    uppercase suffix, an extensionless file, and a dotfile), run grouping, and the
+    rendered tree: one `CodeBlock` per same-kind run with the run's lines joined, the
+    right grammar, `lineNumbers` on, and the plain-row fallback both for an unknown
+    suffix and with the primitive missing entirely. The same run loads the committed
+    `lib/client.js` through its real `window.__ModuleLoader__.load` envelope and the
+    legacy dynamic payload through an evaluator body, asserting both still register the
+    view (and that the dynamic scope really has no `require`, so the guarded lookup takes
+    the fallback).
+14. **Answer-label check** (added with the fix for the blanking tab): the same script
+    slices the `__fd-answer-begin/end` block and asserts that `AnswerText` hands the
+    renderer all three labels it reads without a guard (`code.copyLabel`,
+    `code.copiedLabel`, `footnotes`), that the renderer sits inside `MarkdownBoundary`,
+    that the boundary renders its children when healthy and its plain-text fallback once
+    `failed`, and that the no-renderer arm still returns the raw text. The failure this
+    covers was found in a browser, not here: the offline Markdown check in item 11 used a
+    stub renderer, which is exactly why a missing `labels` object survived it.
 
 Not yet performed: a real browser interaction — mounting the tab, scrolling the rail,
 jumping to an unloaded turn, carrying the pointer from a mark onto the note card, and
 confirming that a floating card really does sit over the diffs without clipping or
-disturbing the pinned file rows. jsdom reports zero heights, so layout questions there
-are logic-verified only. That is the last acceptance step after a reload.
+disturbing the pinned file rows. The highlighted rows add one more of the same kind:
+the per-line diff backgrounds and the `+`/`-` `::before` signs depend on the
+primitive's numbered layout and on the shell stylesheet's `.line` rule, which jsdom
+would not model either. This gap is not theoretical — the first real browser pass over
+the Answer card is what found the missing `labels` object (item 14), after the
+stub-renderer check in item 11 had passed. jsdom reports zero heights, so layout
+questions there are logic-verified only. That is the last acceptance step after a
+reload.
 
 Rebuilds reach a **running** server without a restart: `@deepseek-ai/dsh-client-hmr`
 stat-polls every graph row's client bundle (500 ms) and hot-swaps the module in the

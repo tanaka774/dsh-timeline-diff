@@ -49,6 +49,11 @@ view alongside Chat and Trajectory that answers exactly that, in two modes:
 Created files are marked `new file`. Sticky headers keep the current message and
 file name visible while you scroll a long diff.
 
+Diff lines are **syntax highlighted** with the same Shiki surface the sidebar's file
+preview uses (the harness's `CodeBlock` primitive), so a line of code carries the
+same colors in the Diff tab as it does when you open that file in the sidebar.
+Suffixes without a grammar keep the plain rendering.
+
 A **turn navigator rail** on the right edge mirrors the one the Chat tab has: one
 mark per turn of the session. Loaded marks scroll to that turn's section; marks for
 turns outside the loaded window page history in first. Hover or focus a mark and a
@@ -117,6 +122,7 @@ supported form.
 | `conversation.view` slot | A **Diff** tab in the session header, with Timeline and File modes |
 | Per-message aggregation | `Σ path` rows: one diff per file per message window, with `+a −b` |
 | Session-cumulative diffs | One diff per file from conversation start to session end |
+| Syntax highlighting | Diff lines colored with the sidebar file preview's own `CodeBlock` (Shiki) |
 | Sticky headers | The current message card and file name stay pinned while scrolling |
 | Turn navigator rail | The Chat tab's turn rail, in Timeline mode: click a mark to jump, hover it for a note card |
 | Answer notes | Each mark's note shows that turn's prompt, the LLM's full final answer (scrollable), and the files it changed |
@@ -167,8 +173,19 @@ verify.
   the same. Both are always fully readable, just not all at once.
 - **Markdown rendering depends on the harness.** The answer is rendered with the
   harness's own Markdown component, which the web shell exposes as a static module
-  (`ui-primitives`) alongside `react`. If a harness stops exposing it, answers fall back
-  to plain text with line breaks preserved rather than failing.
+  (`ui-primitives`) alongside `react`. It is handed the `labels` its code-fence and
+  footnote chrome reads — omitting them made the renderer throw on the first fenced
+  block in an answer and took the whole view down. The answer is also wrapped in an
+  error boundary, so a renderer that throws anyway costs the formatting, not the tab:
+  the text is shown with its line breaks preserved.
+- **Highlighting is per patch run, and bounded by the harness's grammar set.** Shiki
+  highlights a document, not a line, so each same-kind run of a hunk (the context block,
+  the deletions, the insertions) is highlighted as one block: a multi-line construct
+  that straddles a run boundary is tokenized in two pieces. Only the suffixes the
+  sidebar's own code preview recognizes are colored; anything else keeps the plain
+  rendering. The colors come from `ui-primitives`' `CodeBlock` — the same static module
+  as the Markdown renderer, so the same caveat applies, and the no-install dynamic
+  payload (where `require` does not exist) always shows plain rows.
 - **API coupling.** The plugin targets the harness client and Remote APIs of
   `dsh 0.1.5-rc.2`. A harness update that changes slot props, service names, or the
   `workspaceFiles` Remote namespace can require a matching plugin update. The rail
@@ -181,6 +198,7 @@ verify.
 ```sh
 node scripts/build-client.mjs      # src/client.js -> lib/client.js (the dsh.client bundle)
 node scripts/port-from-dynamic.mjs # re-derive src/client.js from the legacy payload
+node scripts/check-client.mjs      # offline check: suffix map, run grouping, answer labels, bundle + dynamic mirror
 ```
 
 `lib/client.js` is a build artifact and is committed; edit `src/client.js`, then

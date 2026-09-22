@@ -6,6 +6,27 @@
   <a href="LICENSE"><img alt="license" src="https://badgen.net/badge/license/MIT/blue"></a>
 </p>
 
+The feature is simple, you can see each file change per your conversation on your "Files" tab.
+
+<img width="1311" height="851" alt="image" src="https://github.com/user-attachments/assets/bb7d7938-4664-4679-be91-195af7e720b4" />
+
+## Motivation
+
+- I wanted a diff viewer as pure history of each change, which is unrelated to git or other tools.
+- I thought it would be useful in case of confirming what the previous session did if you can see each of those changes. 
+
+## Install
+
+```
+dsh plugin --profile web add "github:tanaka774/dsh-timeline-files-diff-plugin"
+```
+
+------
+
+The following is the llm's gentle explanation.
+
+------
+
 ## What it is
 
 DeepSeek Harness already renders a diff on each `write`/`edit` tool card. What it

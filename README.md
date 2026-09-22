@@ -48,6 +48,23 @@ view alongside Chat and Trajectory that answers exactly that, in two modes:
 Created files are marked `new file`. Sticky headers keep the current message and
 file name visible while you scroll a long diff.
 
+A **turn navigator rail** on the right edge mirrors the one the Chat tab has: one
+mark per turn of the session. Loaded marks scroll to that turn's section; marks for
+turns outside the loaded window page history in first. Hover or focus a mark and a
+**note card** opens with that turn's prompt, the LLM's **full final answer** — the
+whole message, scrollable rather than a three-line teaser — and the files the turn
+changed.
+
+Each message header also carries an **Answer** chip. Click it and the answer opens as
+a **floating card** under that prompt, occupying the right half of the message column
+so the prompt stays readable beside it, hovering over the diffs it explains — the
+*why* and the *what changed* are readable at once, and the diffs keep their full
+height because the card is out of the layout. Answers are rendered as **Markdown**,
+the same GFM the Chat tab gives assistant text. The card scrolls on its own when the
+answer is long, closes on the chip, `Escape`, or a click outside, and gets out of the
+way once you scroll to another message. The rail note is the glance-while-navigating
+surface, the card is the read-it-in-place one.
+
 ## Why you'd want it
 
 Without it, answering "what did this session actually change?" means scrolling the
@@ -100,6 +117,9 @@ supported form.
 | Per-message aggregation | `Σ path` rows: one diff per file per message window, with `+a −b` |
 | Session-cumulative diffs | One diff per file from conversation start to session end |
 | Sticky headers | The current message card and file name stay pinned while scrolling |
+| Turn navigator rail | The Chat tab's turn rail, in Timeline mode: click a mark to jump, hover it for a note card |
+| Answer notes | Each mark's note shows that turn's prompt, the LLM's full final answer (scrollable), and the files it changed |
+| Answer chip | An **Answer** toggle in each message header floats that turn's answer, as Markdown, over its diffs without moving them |
 
 ## How the cumulative diffs stay honest
 
@@ -131,9 +151,29 @@ verify.
   deleted and recreated) at the end of a session can only be partially reconstructed
   and falls back to per-change display.
 - **Very large files are skipped** for cumulative diffs and shown per-change.
+- **The rail maps turns, so it is Timeline-only.** File mode groups by path and has no
+  turn order, so the rail is not rendered there. A turn that changed nothing keeps a
+  dimmed mark and lands on the nearest section that did change; the rail is hidden
+  below 900 px, like the one in Chat.
+- **The answer is the full final message, when the turn is loaded.** A turn outside the
+  loaded window has no message text on the client, so both the note and the card fall
+  back to the host's bounded outline preview (labelled `Answer (preview)`) — and the card
+  offers a **Load this message** action that pages that turn's events in, after which it
+  shows the real message. A turn with no text at all (a tool-only turn, or one still
+  running) shows no Answer chip and says so in the note.
+- **A very long answer is capped, not clipped.** The card scrolls inside its own box (at
+  most half the viewport) so it cannot swallow the diff area, and the rail's note does
+  the same. Both are always fully readable, just not all at once.
+- **Markdown rendering depends on the harness.** The answer is rendered with the
+  harness's own Markdown component, which the web shell exposes as a static module
+  (`ui-primitives`) alongside `react`. If a harness stops exposing it, answers fall back
+  to plain text with line breaks preserved rather than failing.
 - **API coupling.** The plugin targets the harness client and Remote APIs of
   `dsh 0.1.5-rc.2`. A harness update that changes slot props, service names, or the
-  `workspaceFiles` Remote namespace can require a matching plugin update.
+  `workspaceFiles` Remote namespace can require a matching plugin update. The rail
+  additionally depends on the `useChat` / `useProjection` standard props of the
+  `conversation.view` slot and on `session.loadThrough`; if a harness stops supplying
+  them the rail degrades to loaded turns only rather than failing the view.
 
 ## Development
 

@@ -1,21 +1,3 @@
-// DSH Session Files & Diffs — dynamic Cordis plugin client payload.
-//
-// This file is the exact `code.client` value for `cordis_define`:
-// a plain-JavaScript function body that returns the browser-half Cordis Plugin.
-// Do not add imports, JSX, or TypeScript — the dynamic evaluator provides
-// `ctx`, `React`, `styles`, `console`, `host` and the injected `slots`/`sessions`
-// services. It pairs with `plugin-host.js` (`code.host`), which provides one
-// read-only RPC (`fd.readFile`) used to anchor cumulative file reconstruction.
-//
-// Data model note: the persisted session log carries, per write/edit call, only
-// contextual hunks (changed region ± 3 context lines) — never the full "before"
-// content of a file that already existed. Cumulative per-file diffs are therefore
-// reconstructed: the current on-disk content (via the host half) is walked
-// BACKWARD by undoing every recorded hunk (each step must match exactly once),
-// which yields the content at any earlier point of the conversation; created
-// files are walked FORWARD from their first full content. Any failed step makes
-// that file fall back to the plain per-change rendering — never wrong data.
-
 const CSS = `
 .fd-view { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 /* The session body owns the scrollport ([data-conversation-scroll]): the view area
@@ -31,9 +13,16 @@ const CSS = `
 .fd-toggle button { border: none; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer; }
 .fd-toggle button.fd-toggle-active { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
 .fd-section { display: flex; flex-direction: column; gap: 6px; }
-.fd-section-user { position: sticky; top: 0; z-index: 3; display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+/* The message header is a container, not a single button: it holds the section's
+   collapse toggle, an Answer toggle for the turn's answer, and the answer itself —
+   inside the same sticky box, so the answer stays on screen while its own diffs
+   scroll under it. Nested buttons are invalid HTML, so the row is split into a real
+   button (prompt) plus a sibling chip; the row's own click handler keeps the whole
+   row collapsing the section the way it always did, and the chip stops propagation. */
+.fd-section-user { position: sticky; top: 0; z-index: 3; display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; text-align: left; }
 .fd-section-user:hover { border-color: var(--dsw-alias-brand-primary); }
-.fd-section-user-row { display: flex; align-items: center; gap: 8px; }
+.fd-section-user-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.fd-section-user-toggle { flex: 1 1 auto; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
 .fd-section-user-chevron { flex: none; width: 1em; color: var(--dsw-alias-label-secondary); transition: transform 0.15s ease; }
 .fd-section-user.fd-section-open .fd-section-user-chevron { transform: rotate(90deg); }
 .fd-section-user-text { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
@@ -45,9 +34,27 @@ const CSS = `
    window: keep the exact header chrome so its file rows match the following
    sections, but mute the placeholder label so it is not mistaken for a prompt. */
 .fd-section-user.fd-section-earlier .fd-section-user-text { color: var(--dsw-alias-label-secondary); font-weight: 400; }
+/* Answer chip, and the card it opens. The answer is a floating card, not a row in
+   the header: position:absolute keeps it out of the header's flow, so the pinned
+   header never grows and no sticky offset has to be re-measured, and the diffs keep
+   their full height underneath while the answer hovers over them. It occupies the
+   right half of the message column — the prompt keeps the left — and is
+   height-capped with its own scroll so a long answer cannot swallow the viewport
+   either. */
+.fd-section-user-answer-toggle { flex: none; padding: 1px 8px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font: inherit; font-size: 11px; line-height: 16px; cursor: pointer; }
+.fd-section-user-answer-toggle:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary); }
+.fd-section-user-answer-toggle[aria-expanded="true"] { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary); }
+/* The open section lifts above its later siblings, whose headers share z-index 3 and
+   would otherwise paint over the floating card the moment they pin. */
+.fd-section-user.fd-section-answer-open { z-index: 5; }
+.fd-section-answer { position: absolute; top: calc(100% + 6px); left: 50%; right: 0; z-index: 1; max-height: min(60vh, 560px); overflow-y: auto; overscroll-behavior: contain; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-elevation-panel); color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 1.6; text-align: left; overflow-wrap: anywhere; }
+.fd-section-answer-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-caption); font-size: 11px; }
+.fd-section-answer-load { flex: none; margin-left: auto; padding: 1px 8px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; line-height: 16px; cursor: pointer; }
+.fd-section-answer-load:hover:not(:disabled) { border-color: var(--dsw-alias-brand-primary); }
+.fd-section-answer-load:disabled { opacity: 0.6; cursor: default; }
+.fd-section-answer-text { overflow-wrap: anywhere; }
 .fd-change { position: sticky; top: var(--fd-sticky-offset, 0px); z-index: 2; display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 8px; border: none; border-radius: 6px; background: none; color: var(--dsw-alias-label-primary); font: inherit; text-align: left; cursor: pointer; }
 .fd-change:hover { background: var(--dsw-alias-bg-layer-2); }
-.fd-change.fd-stuck { background: var(--dsw-alias-bg-layer-1); box-shadow: 0 1px 0 0 var(--dsw-alias-border-l1); }
 .fd-change-index { flex: none; min-width: 3ch; color: var(--dsw-alias-label-secondary); font-size: 12px; text-align: right; }
 .fd-change-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 /* One cumulative (aggregated) diff per file — timeline "total in this message" rows.
@@ -56,7 +63,13 @@ const CSS = `
    file rows pin one at a time without overlapping. */
 .fd-total { position: sticky; top: var(--fd-sticky-offset, 0px); z-index: 2; display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 8px; border: none; border-radius: 6px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent); color: var(--dsw-alias-label-primary); font: inherit; text-align: left; cursor: pointer; }
 .fd-total:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 13%, transparent); }
-.fd-total.fd-stuck { box-shadow: 0 1px 0 0 var(--dsw-alias-border-l1); }
+/* A pinned filename header must be opaque, or the diff scrolling underneath
+   shows through it. Both header kinds (.fd-change fallback entries and File-mode
+   groups, .fd-total aggregates) paint the same tint-aware surface while stuck so
+   the pinned row looks identical whichever kind it is; the untinted layer it
+   used before made one header go near-black while the other kept a bare tint. */
+.fd-change.fd-stuck,
+.fd-total.fd-stuck { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, var(--dsw-alias-bg-layer-1)); box-shadow: 0 1px 0 0 var(--dsw-alias-border-l1); }
 .fd-total-mark { flex: none; min-width: 3ch; color: var(--dsw-alias-brand-primary); font-size: 12px; text-align: right; font-weight: 600; }
 .fd-total-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 .fd-total-meta { flex: 1 1 auto; text-align: right; color: var(--dsw-alias-label-secondary); font-size: 12px; }
@@ -77,6 +90,73 @@ const CSS = `
    entries by their order field (chat 0, trajectory 10, diff 20), so the Diff tab
    already renders rightmost. Do NOT reorder the tablist with positional CSS here —
    that assumes a fixed DOM order and flips the tabs whenever the harness changes it. */
+/* Turn navigator rail — the Chat tab's helper, reimplemented for this view. One
+   fixed-pitch mark per Turn of the session on the right edge: loaded marks scroll
+   this view to the Turn's message section, marks for Turns outside the loaded
+   window page history in first, and hover/focus opens a note card for that Turn
+   with its prompt, its full final answer, and the files it changed. Geometry reads
+   the conversation variables the shipped rail reads (viewport height, composer
+   height), so both rails sit at the same place; .fd-scroll's 20px side padding is
+   folded into the right offset. No container query units here — adding
+   container-type to an ancestor of the sticky section headers risks their pinning
+   behaviour. */
+.fd-rail-slot { position: sticky; top: 0; z-index: 6; height: 0; pointer-events: none; }
+.fd-rail-frame { --fd-rail-band: calc(var(--dsh-conversation-viewport-height, 100dvh) - var(--dsh-composer-height, 152px)); --fd-rail-preview-height: min(360px, calc(var(--fd-rail-band) - 96px)); position: absolute; top: calc(var(--fd-rail-band) / 2); right: -8px; width: 28px; height: min(var(--fd-rail-natural-height), max(0px, calc(var(--fd-rail-band) - 64px)), 420px); cursor: pointer; pointer-events: auto; transition: height 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); transform: translateY(-50%); }
+.fd-rail-scroller { position: absolute; inset: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.fd-rail-scroller::-webkit-scrollbar { display: none; }
+.fd-rail-fade-top { mask-image: linear-gradient(#0000 0, #000 24px 100%); }
+.fd-rail-fade-bottom { mask-image: linear-gradient(#000 0 calc(100% - 24px), #0000 100%); }
+.fd-rail-fade-top.fd-rail-fade-bottom { mask-image: linear-gradient(#0000 0, #000 24px calc(100% - 24px), #0000 100%); }
+.fd-rail-marks { position: relative; height: var(--fd-rail-natural-height); }
+.fd-rail-mark-position { position: absolute; left: 0; right: 0; height: 10px; top: calc(var(--fd-rail-natural-position) + var(--fd-rail-inset)); transform: translateY(-50%); transition: top 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); animation: 0.15s ease-out fd-rail-mark-enter; }
+.fd-rail-mark { position: absolute; inset: 0 0 0 auto; width: 20px; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
+.fd-rail-mark::before { content: ""; position: absolute; top: 50%; right: 0; width: 12px; height: 2px; border-radius: 2px; background: var(--dsw-alias-border-l4); transform: translateY(-50%); transition: width 0.14s, background-color 0.14s; }
+/* A Turn the loaded window does not hold yet: the mark is short and quiet until
+   its jump pages it in. A loaded Turn with no file change keeps a dimmed mark so
+   the rail still maps the whole conversation without pretending it has diffs. */
+.fd-rail-mark-unloaded::before { width: 8px; opacity: 0.6; }
+.fd-rail-mark-nodiff::before { opacity: 0.45; }
+.fd-rail-mark-preview::before { width: 18px; background: var(--dsw-alias-label-tertiary); opacity: 1; }
+.fd-rail-mark-active::before { width: 20px; background: var(--dsw-alias-label-primary); opacity: 1; }
+.fd-rail-mark-busy::before { animation: 1s ease-in-out infinite fd-rail-mark-busy; }
+.fd-rail-mark:focus-visible { outline: 1px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }
+.fd-rail-mark:focus-visible::before { width: 20px; background: var(--dsw-alias-state-business-primary); opacity: 1; }
+/* The hover/focus note. Unlike the shipped rail (a fixed 100px preview) this card
+   is the Turn's reading surface: it is flush with the frame's left edge and takes
+   pointer events, so the pointer can travel from a mark onto the note without a
+   dead gap, and a long answer scrolls inside the card instead of being clipped.
+   The card is tall enough to hold a full answer, bounded by the space above the
+   composer (--fd-rail-preview-height). */
+.fd-rail-preview { position: absolute; right: 100%; box-sizing: border-box; width: min(420px, calc(100vw - 120px)); max-height: var(--fd-rail-preview-height); display: flex; flex-direction: column; padding: 10px 12px; border: 0; border-radius: 10px; background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-elevation-panel); color: var(--dsw-alias-label-primary); cursor: default; overflow: hidden; top: clamp(0px, calc(var(--fd-rail-natural-position) + var(--fd-rail-inset) - var(--fd-rail-scroll-top, 0px) - var(--fd-rail-preview-height) / 2), calc(100% - var(--fd-rail-preview-height))); transition: top 0.14s cubic-bezier(0.2, 0.8, 0.2, 1); animation: 0.12s ease-out fd-rail-preview-enter; }
+.fd-rail-preview-prompt { flex: none; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font: var(--dsw-font-xs-strong-13); }
+/* The full answer, not a line-clamped teaser: whitespace is preserved and the
+   block scrolls on its own when the answer is taller than the card. */
+.fd-rail-preview-answer { flex: 1 1 auto; min-height: 0; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxs-12); overflow-wrap: anywhere; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.fd-rail-preview-answer-muted { color: var(--dsw-alias-label-caption); font-style: italic; }
+.fd-rail-preview-detail { flex: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-brand-primary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+@keyframes fd-rail-mark-enter { 0% { opacity: 0 } to { opacity: 1 } }
+@keyframes fd-rail-preview-enter { 0% { opacity: 0; transform: translate(4px) } to { opacity: 1; transform: translate(0) } }
+@keyframes fd-rail-mark-busy { 0%, to { opacity: 1 } 50% { opacity: 0.35 } }
+@media (max-width: 900px) { .fd-rail-slot { display: none; } }
+@media (prefers-reduced-motion: reduce) { .fd-rail-frame, .fd-rail-mark-position, .fd-rail-mark::before, .fd-rail-mark-busy::before, .fd-rail-preview { transition: none; animation: none; } }
+/* Answer text, in both surfaces. Rendered Markdown carries almost no class names
+   (the harness styles its own chat containers), so the block elements get the
+   spacing and code surface this view uses; the plain fallback preserves the
+   message's own line breaks. */
+.fd-answer-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fd-answer-markdown > :first-child { margin-top: 0; }
+.fd-answer-markdown > :last-child { margin-bottom: 0; }
+.fd-answer-markdown p { margin: 0 0 8px; }
+.fd-answer-markdown ul, .fd-answer-markdown ol { margin: 0 0 8px; padding-left: 20px; }
+.fd-answer-markdown li { margin: 0 0 2px; }
+.fd-answer-markdown h1, .fd-answer-markdown h2, .fd-answer-markdown h3, .fd-answer-markdown h4 { margin: 10px 0 6px; font-size: 13px; font-weight: 600; }
+.fd-answer-markdown code { padding: 1px 4px; border-radius: 4px; background: var(--dsw-alias-bg-layer-2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.fd-answer-markdown pre { margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-base); overflow-x: auto; }
+.fd-answer-markdown pre code { padding: 0; background: none; }
+.fd-answer-markdown a { color: var(--dsw-alias-brand-primary); }
+.fd-answer-markdown blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); }
+.fd-answer-markdown table { margin: 0 0 8px; border-collapse: collapse; }
+.fd-answer-markdown th, .fd-answer-markdown td { padding: 3px 8px; border: 1px solid var(--dsw-alias-border-l1); }
 `
 
 let viewMode = 'session'
@@ -86,6 +166,35 @@ return {
   apply(ctx) {
     const slots = ctx.get('slots')
     if (slots === undefined) return
+
+    // The harness's own Markdown renderer, reached through the shell's static
+    // module table (`staticModules`: react, react/jsx-runtime, react-dom,
+    // react-dom/client, cordis, dsh-client-store, dsh-client-ui-slots,
+    // dsh-client-ui-primitives, dsh-client-ui-dockkit). Entries there resolve
+    // exactly like the `react` require above — no dependency, no
+    // `dsh.client.external` graph edge, and the same GFM+KaTeX rendering the Chat
+    // tab gives assistant text. Guarded because a harness that drops the entry, or
+    // the dynamic payload where `require` does not exist at all, must degrade to
+    // pre-wrapped plain text rather than take the whole view down.
+    const MarkdownText = (() => {
+      try {
+        const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+        if (primitives === null || primitives === undefined) return null
+        return primitives.MarkdownText === undefined || primitives.MarkdownText === null ? null : primitives.MarkdownText
+      } catch (error) {
+        return null
+      }
+    })()
+
+    /**
+     * An assistant answer: Markdown when the harness renderer is reachable, the
+     * message's own text (line breaks preserved) otherwise. `className` carries the
+     * surface's own layout; the wrapper adds the block-element styling.
+     */
+    const AnswerText = ({ text, className }) => MarkdownText === null
+      ? React.createElement('div', { className: `${className} fd-answer-plain` }, text)
+      : React.createElement('div', { className: `${className} fd-answer-markdown` },
+        React.createElement(MarkdownText, { text }))
 
     // ------------------------------------------------------------------ //
     // Pure core (kept contiguous for offline unit tests between markers) //
@@ -155,6 +264,30 @@ return {
       }
       const trimmed = text.trim()
       return trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : trimmed
+    }
+
+    // One assistant message's visible text, in full: the answer itself, not the
+    // host's three-line preview. Reasoning blocks are deliberately excluded — the
+    // answer explains the change, it does not expose the model's thinking — and a
+    // message with no text (a tool-only step) returns '', so a section keeps its
+    // newest text-bearing answer.
+    //
+    // The block discriminators differ by role and this is easy to get wrong: an
+    // assistant node's `blocks` are Chat `AssistantBlock`s, tagged `kind` (the Chat
+    // target converts the core `type`-tagged blocks through `toAssistantBlocks`),
+    // while a user node's `content` keeps the core `type`. Both are accepted so a
+    // harness that stops converting does not silently empty every answer — which is
+    // exactly what `type`-only matching did against the real log.
+    const assistantText = (node) => {
+      if (node.kind !== 'assistant' || !Array.isArray(node.blocks)) return ''
+      let text = ''
+      for (const block of node.blocks) {
+        if (block === null || typeof block !== 'object') continue
+        const isText = (block.kind === 'text' || block.type === 'text') && typeof block.text === 'string'
+        if (!isText) continue
+        text += (text === '' ? '' : '\n\n') + block.text
+      }
+      return text.trim()
     }
 
     const splitLines = (text) => {
@@ -227,7 +360,10 @@ return {
 
     // Group a conversation snapshot's file changes.
     // sections: per user message, the chronological per-hunk entries (identical
-    //   semantics/order to the original Timeline view).
+    //   semantics/order to the original Timeline view). Each section also records
+    //   the `seq` of the node that opened it, which is how a section is matched to
+    //   its Turn for the navigator rail, and `answer`: the full text of the last
+    //   assistant message the turn produced — what the rail's note card shows.
     // files: per path, the ordered change events; one event = one tool call's
     //   hunks for that file, tagged with the section it happened in.
     const buildModel = (nodes, cwd) => {
@@ -235,18 +371,28 @@ return {
       const sections = []
       const byPath = new Map()
       let current = null
+      const openSection = (user, node) => {
+        current = { user, changes: [], seq: typeof node.seq === 'number' ? node.seq : null, answer: '' }
+        sections.push(current)
+        return current
+      }
       for (const node of nodes) {
         if (node.kind === 'user') {
-          current = { user: userText(node), changes: [] }
-          sections.push(current)
+          openSection(userText(node), node)
+          continue
+        }
+        if (node.kind === 'assistant') {
+          // A window can open on an assistant step whose prompt is outside it; the
+          // placeholder section keeps that answer attached to the turn it belongs
+          // to instead of dropping it.
+          if (current === null) openSection(null, node)
+          const text = assistantText(node)
+          if (text !== '') current.answer = text
           continue
         }
         const diffs = extractHunks(node)
         if (diffs === null) continue
-        if (current === null) {
-          current = { user: null, changes: [] }
-          sections.push(current)
-        }
+        if (current === null) openSection(null, node)
         const sec = sections.length - 1
         const byFile = new Map()
         for (const d of diffs) {
@@ -616,9 +762,53 @@ return {
         React.createElement(CumulativeBody, { before: agg.before, after: agg.after }))
     }
 
-    const Section = ({ section, startIndex, aggregates }) => {
+    // Memoized: the rail's active mark changes as the reader scrolls, and without
+    // this guard each of those commits would reconcile every row of every diff in
+    // the session. Its props are the memoized model section, aggregation list, and
+    // Turn scalars, so they are stable unless the changes themselves move.
+    const Section = React.memo(function Section({ section, startIndex, aggregates, turn, answer, answerIsOwn, answerLoadSeq, active, onResize, onLoadTurn }) {
       const [open, setOpen] = React.useState(true)
       const [showDetails, setShowDetails] = React.useState(false)
+      const [showAnswer, setShowAnswer] = React.useState(false)
+      const [loadingAnswer, setLoadingAnswer] = React.useState(false)
+      const headerRef = React.useRef(null)
+      // The floating card belongs to the message you are reading. Once another
+      // message's header pins over this one, an open card would hover over the wrong
+      // diffs, so it only shows while its own section is the active one. An unknown
+      // active Turn (nothing measured yet) must not lock the card shut.
+      const answerOpen = showAnswer && answer !== '' && (active !== false || turn === null)
+      React.useEffect(() => {
+        if (!answerOpen) return undefined
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') setShowAnswer(false)
+        }
+        const onPointerDown = (event) => {
+          const target = event.target
+          const inHeader = headerRef.current !== null
+            && target !== null
+            && typeof target.closest === 'function'
+            && headerRef.current.contains(target)
+          if (!inHeader) setShowAnswer(false)
+        }
+        document.addEventListener('keydown', onKeyDown)
+        document.addEventListener('pointerdown', onPointerDown, true)
+        return () => {
+          document.removeEventListener('keydown', onKeyDown)
+          document.removeEventListener('pointerdown', onPointerDown, true)
+        }
+      }, [answerOpen])
+      // Collapsing the section and opening the card both change the header's height,
+      // and the header is the sticky offset its own file rows pin beneath.
+      React.useEffect(() => {
+        if (typeof onResize === 'function') onResize()
+      }, [open, answerOpen, showDetails, onResize])
+      const loadAnswer = () => {
+        if (typeof onLoadTurn !== 'function' || !Number.isSafeInteger(answerLoadSeq)) return
+        setLoadingAnswer(true)
+        Promise.resolve(onLoadTurn(answerLoadSeq)).catch(() => {}).then(() => {
+          setLoadingAnswer(false)
+        })
+      }
       const count = section.changes.length
       const uniquePaths = []
       const seen = new Set()
@@ -676,16 +866,49 @@ return {
       // fallback so the header is never blank.
       const earlier = section.user === null
       const userLabel = earlier ? 'Earlier messages not loaded' : (section.user === '' ? '(message has no text)' : section.user)
-      const headerClass = `fd-section-user ${open ? 'fd-section-open' : 'fd-section-closed'}${earlier ? ' fd-section-earlier' : ''}`
-      const header = React.createElement('button', { type: 'button', className: headerClass, onClick: () => setOpen(!open) },
-        React.createElement('span', { className: 'fd-section-user-row' },
-          React.createElement('span', { className: 'fd-section-user-chevron' }, '\u25b8'),
-          React.createElement('span', { className: 'fd-section-user-text' }, userLabel),
-          React.createElement('span', { className: 'fd-section-user-count' }, `${count} change${count === 1 ? '' : 's'}`)),
+      const headerClass = `fd-section-user ${open ? 'fd-section-open' : 'fd-section-closed'}${earlier ? ' fd-section-earlier' : ''}${answerOpen ? ' fd-section-answer-open' : ''}`
+      const metaLabel = answerIsOwn === true
+        ? (turn === null ? 'Answer' : `Answer \u00b7 message ${turn}`)
+        : (turn === null ? 'Answer (preview)' : `Answer (preview) \u00b7 message ${turn}`)
+      const header = React.createElement('div', {
+        className: headerClass,
+        ref: headerRef,
+        'data-fd-turn': turn === null || turn === undefined ? undefined : String(turn),
+      },
+        React.createElement('div', { className: 'fd-section-user-row', onClick: () => setOpen(!open) },
+          React.createElement('button', { type: 'button', className: 'fd-section-user-toggle', 'aria-expanded': open },
+            React.createElement('span', { className: 'fd-section-user-chevron' }, '\u25b8'),
+            React.createElement('span', { className: 'fd-section-user-text' }, userLabel)),
+          React.createElement('span', { className: 'fd-section-user-count' }, `${count} change${count === 1 ? '' : 's'}`),
+          answer === '' ? null : React.createElement('button', {
+            type: 'button',
+            className: 'fd-section-user-answer-toggle',
+            'aria-expanded': answerOpen,
+            onClick: (event) => {
+              event.stopPropagation()
+              setShowAnswer(!showAnswer)
+            },
+          }, 'Answer')),
+        answerOpen
+          ? React.createElement('div', { className: 'fd-section-answer', role: 'dialog', 'aria-label': 'Assistant answer for this message' },
+            answerIsOwn === true && !Number.isSafeInteger(answerLoadSeq)
+              ? null
+              : React.createElement('div', { className: 'fd-section-answer-meta' },
+                React.createElement('span', null, metaLabel),
+                Number.isSafeInteger(answerLoadSeq)
+                  ? React.createElement('button', {
+                    type: 'button',
+                    className: 'fd-section-answer-load',
+                    disabled: loadingAnswer,
+                    onClick: loadAnswer,
+                  }, loadingAnswer ? 'Loading\u2026' : 'Load this message')
+                  : null),
+            React.createElement(AnswerText, { text: answer, className: 'fd-section-answer-text' }))
+          : null,
         open ? null : React.createElement('span', { className: 'fd-section-user-files' }, uniquePaths.join(' \u00b7 ')))
       if (!open) return React.createElement('div', { className: 'fd-section' }, header)
       return React.createElement('div', { className: 'fd-section' }, header, ...entries)
-    }
+    })
 
     // ------------------------------------------------------------------ //
     // File mode: one cumulative diff per file                             //
@@ -726,9 +949,170 @@ return {
     }
 
     // ------------------------------------------------------------------ //
+    // Turn navigator rail                                                 //
+    // ------------------------------------------------------------------ //
+    // Port of the Chat tab's rail (its component is not exported to plugins).
+    // A mark is one Turn: loaded Turns scroll this view, Turns outside the loaded
+    // window are paged in first. The ladder merges the same two sources Chat merges
+    // — the loaded turn navigation index and the `turnOutline` projection — so it
+    // matches the Chat rail turn for turn.
+    const RAIL_STEP_PX = 10
+    const RAIL_INSET_PX = 6
+    const RAIL_AT_REST = { top: 0, canScrollUp: false, canScrollDown: false }
+
+    const railItemPosition = (index) => ({ '--fd-rail-natural-position': `${String(index * RAIL_STEP_PX)}px` })
+    const railFrameStyle = (count, scrollTop) => ({
+      '--fd-rail-natural-height': `${String((count - 1) * RAIL_STEP_PX + 2 * RAIL_INSET_PX)}px`,
+      '--fd-rail-inset': `${String(RAIL_INSET_PX)}px`,
+      '--fd-rail-scroll-top': `${String(scrollTop)}px`,
+    })
+
+    // Pointer y -> mark index. Fixed pitch, so this is arithmetic, not hit-testing.
+    const railItemAtPointer = (items, frame, scrollTop, clientY) => {
+      const offset = clientY - frame.getBoundingClientRect().top + scrollTop - RAIL_INSET_PX
+      return items[Math.max(0, Math.min(items.length - 1, Math.round(offset / RAIL_STEP_PX)))]
+    }
+
+    const railScrollState = (scroller) => {
+      const top = scroller.scrollTop
+      return {
+        top,
+        canScrollUp: top > 1,
+        canScrollDown: top < scroller.scrollHeight - scroller.clientHeight - 1,
+      }
+    }
+
+    const sameRailScrollState = (left, right) => left.top === right.top
+      && left.canScrollUp === right.canScrollUp
+      && left.canScrollDown === right.canScrollDown
+
+    // Memoized for the same reason the shipped rail is: the enclosing view
+    // re-renders whenever the active Turn changes, and a long session holds
+    // hundreds of marks.
+    const Rail = React.memo(function Rail({ items, activeTurn, busyTurn, onNavigate }) {
+      const [previewTurn, setPreviewTurn] = React.useState(null)
+      const [scrollState, setScrollState] = React.useState(RAIL_AT_REST)
+      const scrollerRef = React.useRef(null)
+      // While the pointer works the rail, the active mark must not move it under the hand.
+      const pointerInsideRef = React.useRef(false)
+      const previewId = React.useId()
+      const syncScrollState = () => {
+        const scroller = scrollerRef.current
+        if (scroller === null) return
+        const next = railScrollState(scroller)
+        setScrollState((current) => (sameRailScrollState(current, next) ? current : next))
+      }
+      React.useEffect(() => {
+        const scroller = scrollerRef.current
+        if (scroller === null || typeof ResizeObserver === 'undefined') return undefined
+        const observer = new ResizeObserver(syncScrollState)
+        observer.observe(scroller)
+        return () => { observer.disconnect() }
+      }, [])
+      React.useEffect(syncScrollState, [items.length])
+      // Keep the active mark inside the rail's own scroll frame.
+      React.useEffect(() => {
+        const scroller = scrollerRef.current
+        const index = items.findIndex((item) => item.turn === activeTurn)
+        if (scroller === null || index < 0 || pointerInsideRef.current) return
+        const markTop = index * RAIL_STEP_PX + RAIL_INSET_PX
+        const viewTop = scroller.scrollTop
+        const viewHeight = scroller.clientHeight
+        if (viewHeight <= 0 || (markTop >= viewTop + 24 && markTop <= viewTop + viewHeight - 24)) return
+        const target = Math.max(0, markTop - viewHeight / 2)
+        const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+        if (typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: target, behavior: reduced ? 'auto' : 'smooth' })
+        else scroller.scrollTop = target
+        syncScrollState()
+      }, [activeTurn, items])
+      if (items.length < 2) return null
+      const previewIndex = items.findIndex((item) => item.turn === previewTurn)
+      const preview = previewIndex < 0 ? undefined : items[previewIndex]
+      const previewPosition = previewIndex < 0 ? undefined : railItemPosition(previewIndex)
+      const scrollTopNow = () => (scrollerRef.current === null ? 0 : scrollerRef.current.scrollTop)
+      // The note card is a descendant of the frame and takes pointer events, so the
+      // pointer can travel onto it and scroll a long answer. Events originating
+      // inside the card must not re-hit-test the rail (that would swap the note out
+      // from under the pointer) nor navigate.
+      const fromPreview = (event) => {
+        const target = event.target
+        return target !== null
+          && typeof target === 'object'
+          && typeof target.closest === 'function'
+          && target.closest('.fd-rail-preview') !== null
+      }
+      const previewAtPointer = (event) => {
+        if (fromPreview(event)) return
+        const item = railItemAtPointer(items, event.currentTarget, scrollTopNow(), event.clientY)
+        setPreviewTurn(item === undefined ? null : item.turn)
+      }
+      const navigateAtPointer = (event) => {
+        if (fromPreview(event)) return
+        const item = railItemAtPointer(items, event.currentTarget, scrollTopNow(), event.clientY)
+        if (item !== undefined) onNavigate(item)
+      }
+      const fadeClasses = ['fd-rail-scroller']
+      if (scrollState.canScrollUp) fadeClasses.push('fd-rail-fade-top')
+      if (scrollState.canScrollDown) fadeClasses.push('fd-rail-fade-bottom')
+      return React.createElement('div', { className: 'fd-rail-slot' },
+        React.createElement('nav', {
+          className: 'fd-rail-frame',
+          style: railFrameStyle(items.length, scrollState.top),
+          'aria-label': 'Turn navigation',
+          onClick: navigateAtPointer,
+          onPointerMove: previewAtPointer,
+          onPointerEnter: () => { pointerInsideRef.current = true },
+          onPointerLeave: () => {
+            pointerInsideRef.current = false
+            setPreviewTurn(null)
+          },
+        },
+        React.createElement('div', {
+          ref: scrollerRef,
+          className: fadeClasses.join(' '),
+          onScroll: syncScrollState,
+        }, React.createElement('div', { className: 'fd-rail-marks' },
+          items.map((item, index) => {
+            const active = item.turn === activeTurn
+            const showingPreview = item.turn === previewTurn
+            const classes = ['fd-rail-mark']
+            if (item.anchor === 'unloaded') classes.push('fd-rail-mark-unloaded')
+            else if (item.hasChanges !== true && !active) classes.push('fd-rail-mark-nodiff')
+            if (active) classes.push('fd-rail-mark-active')
+            else if (showingPreview) classes.push('fd-rail-mark-preview')
+            if (item.turn === busyTurn) classes.push('fd-rail-mark-busy')
+            return React.createElement('div', { className: 'fd-rail-mark-position', style: railItemPosition(index), key: item.turn },
+              React.createElement('button', {
+                type: 'button',
+                className: classes.join(' '),
+                'aria-label': item.anchor === 'loaded' ? `Jump to message ${item.turn}` : `Load and jump to message ${item.turn}`,
+                'aria-current': active ? 'true' : undefined,
+                'aria-busy': item.turn === busyTurn ? 'true' : undefined,
+                'aria-describedby': showingPreview ? previewId : undefined,
+                onClick: (event) => {
+                  event.stopPropagation()
+                  onNavigate(item)
+                },
+                onFocus: () => setPreviewTurn(item.turn),
+                onBlur: () => setPreviewTurn(null),
+              }))
+          }))),
+        preview !== undefined && previewPosition !== undefined
+          ? React.createElement('div', { id: previewId, role: 'tooltip', className: 'fd-rail-preview', style: previewPosition },
+            React.createElement('div', { className: 'fd-rail-preview-prompt' }, preview.prompt === '' ? `Message ${preview.turn}` : preview.prompt),
+            preview.answer !== ''
+              ? React.createElement(AnswerText, { text: preview.answer, className: 'fd-rail-preview-answer' })
+              : (preview.response !== ''
+                ? React.createElement(AnswerText, { text: preview.response, className: 'fd-rail-preview-answer' })
+                : React.createElement('div', { className: 'fd-rail-preview-answer fd-rail-preview-answer-muted' }, 'No answer recorded for this message.')),
+            preview.detail === '' ? null : React.createElement('div', { className: 'fd-rail-preview-detail' }, preview.detail))
+          : null))
+    })
+
+    // ------------------------------------------------------------------ //
     // View                                                                //
     // ------------------------------------------------------------------ //
-    const FilesView = ({ useSession, useSessions, useConversation, sessionId, loadOlder }) => {
+    const FilesView = ({ useSession, useSessions, useConversation, useProjection, useChat, sessionId, loadOlder, loadThrough }) => {
       // Current harness: the assembled conversation nodes live on the Chat view
       // target's compatibility slice (`useConversation` -> views.get('chat') ->
       // legacy.nodes); the lifecycle snapshot (`useSession`) carries no nodes.
@@ -757,6 +1141,25 @@ return {
         ? (useSession((snap) => (snap !== null && typeof snap === 'object' ? snap.loadingOlder : false)) ?? false)
         : false
       const cwd = useSessions((list) => list.byId[sessionId]?.cwd)
+      // Rail sources, the same two the Chat view reads: the loaded turn navigation
+      // index (anchors + previews for the loaded window) and the `turnOutline`
+      // projection (every started turn, with the `turn/start` seq a jump pages
+      // through). Both are standard `conversation.view` props; each degrades to
+      // "unavailable" rather than throwing when a harness does not supply it.
+      const turnOutline = typeof useProjection === 'function' ? useProjection('turnOutline') : undefined
+      const turnNavigationItems = typeof useChat === 'function'
+        ? useChat((snap) => {
+          if (snap === null || snap === undefined || typeof snap !== 'object') return undefined
+          const navigation = snap.navigation
+          if (navigation === null || navigation === undefined || typeof navigation !== 'object') return undefined
+          if (typeof navigation.items !== 'function') return undefined
+          return navigation.items()
+        })
+        : undefined
+      const [activeTurn, setActiveTurn] = React.useState(null)
+      const [busyTurn, setBusyTurn] = React.useState(null)
+      const [settleTick, setSettleTick] = React.useState(0)
+      const pendingJumpRef = React.useRef(null)
       const scrollRef = React.useRef(null)
       const scrollerRef = React.useRef(null)
       const updateSticky = () => {
@@ -764,15 +1167,21 @@ return {
         if (container === null) return
         const scroller = scrollerRef.current ?? container
         const top = scroller.getBoundingClientRect().top
-        let offset = 0
+        // The pinned section header is also the rail's active Turn: the last header
+        // at or above the reading line owns what the reader is looking at.
         const sectionEls = container.querySelectorAll('.fd-section-user')
+        let pinned = null
         for (let i = sectionEls.length - 1; i >= 0; i -= 1) {
-          const el = sectionEls[i]
-          if (el.getBoundingClientRect().top <= top + 1) {
-            offset = el.offsetHeight
+          if (sectionEls[i].getBoundingClientRect().top <= top + 1) {
+            pinned = sectionEls[i]
             break
           }
         }
+        if (pinned === null && sectionEls.length > 0) pinned = sectionEls[0]
+        const offset = pinned === null ? 0 : pinned.offsetHeight
+        const nextTurn = pinned === null ? null : Number(pinned.getAttribute('data-fd-turn'))
+        const active = Number.isSafeInteger(nextTurn) ? nextTurn : null
+        setActiveTurn((current) => (current === active ? current : active))
         container.style.setProperty('--fd-sticky-offset', `${offset}px`)
         const stickyEls = container.querySelectorAll('.fd-change, .fd-total')
         let stuck = null
@@ -785,6 +1194,18 @@ return {
           else el.classList.remove('fd-stuck')
         }
       }
+      // Collapsing a section, and opening its answer card, both change the header's
+      // height, so the pinned offset its file rows sit under must be re-measured. The
+      // state lives inside
+      // the memoized Section, which does not re-render this view, so the ref is kept
+      // current on every render and the stable callback below lets a child ask for
+      // the re-measure without making Section's props unstable.
+      const updateStickyRef = React.useRef(null)
+      updateStickyRef.current = updateSticky
+      const notifyLayoutChange = React.useCallback(() => {
+        const run = updateStickyRef.current
+        if (run !== null) run()
+      }, [])
       React.useEffect(() => { updateSticky() })
       React.useEffect(() => {
         const container = scrollRef.current
@@ -933,6 +1354,234 @@ return {
         ? new Set(model.sections.flatMap((section) => section.changes.map((change) => change.path))).size
         : files.length
 
+      // Outline entries, structurally narrowed: projection values cross a wire
+      // boundary, and a mark cannot exist without a safe turn + seq.
+      const outlineTurns = React.useMemo(() => {
+        if (!Array.isArray(turnOutline)) return []
+        const list = []
+        for (const raw of turnOutline) {
+          if (raw === null || typeof raw !== 'object') continue
+          const turn = raw.turn
+          const seq = raw.seq
+          if (!Number.isSafeInteger(turn) || turn < 0) continue
+          if (!Number.isSafeInteger(seq) || seq < 0) continue
+          list.push({
+            turn,
+            seq,
+            prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
+            response: typeof raw.response === 'string' ? raw.response : '',
+          })
+        }
+        list.sort((left, right) => left.turn - right.turn)
+        return list
+      }, [turnOutline])
+
+      // Section -> Turn. A section opens on a user node whose seq sits after its
+      // turn's `turn/start` seq, so the newest outline entry at or before it is the
+      // owning Turn. Without the projection, align the loaded turns with the
+      // sections that carry a real user message, in order.
+      const sectionTurns = React.useMemo(() => {
+        const turns = new Array(model.sections.length).fill(null)
+        if (outlineTurns.length > 0) {
+          for (let i = 0; i < model.sections.length; i += 1) {
+            const seq = model.sections[i].seq
+            if (!Number.isSafeInteger(seq)) continue
+            let turn = null
+            for (const entry of outlineTurns) {
+              if (entry.seq > seq) break
+              turn = entry.turn
+            }
+            turns[i] = turn
+          }
+          return turns
+        }
+        const loaded = []
+        if (Array.isArray(turnNavigationItems)) {
+          for (const item of turnNavigationItems) {
+            if (item !== null && typeof item === 'object' && Number.isSafeInteger(item.turn)) loaded.push(item.turn)
+          }
+        }
+        loaded.sort((left, right) => left - right)
+        let cursor = 0
+        for (let i = 0; i < model.sections.length; i += 1) {
+          if (model.sections[i].user === null) continue
+          if (cursor >= loaded.length) break
+          turns[i] = loaded[cursor]
+          cursor += 1
+        }
+        return turns
+      }, [model.sections, outlineTurns, turnNavigationItems])
+
+      // What a section knows for the rail note: its change count and the file list.
+      const railDetailBySection = React.useMemo(() => {
+        const list = new Array(model.sections.length).fill('')
+        for (let i = 0; i < model.sections.length; i += 1) {
+          const section = model.sections[i]
+          if (section.changes.length === 0) continue
+          const paths = []
+          const seen = new Set()
+          for (const change of section.changes) {
+            if (seen.has(change.path)) continue
+            seen.add(change.path)
+            paths.push(change.path)
+          }
+          const shown = paths.slice(0, 3).join(', ')
+          list[i] = `${section.changes.length} change${section.changes.length === 1 ? '' : 's'} \u00b7 ${shown}${paths.length > 3 ? ` +${paths.length - 3} more` : ''}`
+        }
+        return list
+      }, [model.sections])
+
+      // Merge the loaded navigation index with the outline into the full ladder:
+      // a Turn on both sides keeps the loaded anchor and takes an outline preview
+      // only where the window has none (a mid-Turn window head). `answer` is the
+      // full text of the Turn's final assistant message when the loaded window has
+      // it; `response` stays the host's bounded outline preview as the fallback for
+      // Turns that are not loaded (or whose answer is not finalized yet).
+      const railItems = React.useMemo(() => {
+        const byTurn = new Map()
+        for (const entry of outlineTurns) {
+          byTurn.set(entry.turn, {
+            turn: entry.turn,
+            prompt: entry.prompt,
+            response: entry.response,
+            answer: '',
+            detail: '',
+            seq: entry.seq,
+            anchor: 'unloaded',
+            sectionIndex: -1,
+            hasChanges: false,
+          })
+        }
+        if (Array.isArray(turnNavigationItems)) {
+          for (const item of turnNavigationItems) {
+            if (item === null || typeof item !== 'object' || !Number.isSafeInteger(item.turn)) continue
+            const previous = byTurn.get(item.turn)
+            byTurn.set(item.turn, {
+              turn: item.turn,
+              prompt: typeof item.prompt === 'string' && item.prompt !== '' ? item.prompt : (previous === undefined ? '' : previous.prompt),
+              response: typeof item.response === 'string' && item.response !== '' ? item.response : (previous === undefined ? '' : previous.response),
+              answer: previous === undefined ? '' : previous.answer,
+              detail: '',
+              seq: previous === undefined ? null : previous.seq,
+              anchor: 'loaded',
+              sectionIndex: -1,
+              hasChanges: false,
+            })
+          }
+        }
+        for (let i = 0; i < sectionTurns.length; i += 1) {
+          const turn = sectionTurns[i]
+          if (turn === null) continue
+          const item = byTurn.get(turn)
+          if (item === undefined || item.sectionIndex >= 0) continue
+          item.sectionIndex = i
+          item.detail = railDetailBySection[i]
+          item.hasChanges = model.sections[i].changes.length > 0
+          item.answer = model.sections[i].answer
+        }
+        return [...byTurn.values()].sort((left, right) => left.turn - right.turn)
+      }, [outlineTurns, turnNavigationItems, sectionTurns, railDetailBySection, model.sections])
+
+      // The answer shown next to a message's diffs: the loaded turn's own final
+      // assistant message, falling back to the host's bounded outline preview for a
+      // turn whose answer is not in the window (or is still streaming). `own` records
+      // which of the two it is, and `loadSeq` is set only when the turn's events are
+      // outside the window — the case a click can actually fix. Empty text hides the
+      // Answer chip entirely.
+      const answerBySection = React.useMemo(() => {
+        const byTurn = new Map()
+        for (const item of railItems) byTurn.set(item.turn, item)
+        const list = new Array(model.sections.length).fill(null)
+        for (let i = 0; i < model.sections.length; i += 1) {
+          const own = model.sections[i].answer
+          const turn = sectionTurns[i]
+          const item = turn === null ? undefined : byTurn.get(turn)
+          if (own !== '') {
+            list[i] = { text: own, own: true, loadSeq: null }
+            continue
+          }
+          if (item === undefined) continue
+          list[i] = {
+            text: item.response,
+            own: false,
+            loadSeq: item.anchor === 'unloaded' ? item.seq : null,
+          }
+        }
+        return list
+      }, [model.sections, sectionTurns, railItems])
+
+      // One click pages a turn's messages in so the card can show the real answer
+      // instead of the host's short preview.
+      const loadTurnMessages = React.useCallback((seq) => {
+        if (typeof loadThrough !== 'function' || !Number.isSafeInteger(seq)) return Promise.resolve()
+        return Promise.resolve(loadThrough(seq)).catch(() => {}).then(() => {
+          setSettleTick((tick) => tick + 1)
+        })
+      }, [loadThrough])
+
+      // DOM anchors. The view renders only sections that carry changes, so a Turn
+      // with no change has no header of its own: aim at the nearest following
+      // section, else the nearest preceding one, so every mark lands somewhere.
+      const sectionElementForTurn = (turn) => {
+        const container = scrollRef.current
+        if (container === null || !Number.isSafeInteger(turn)) return null
+        const els = container.querySelectorAll('[data-fd-turn]')
+        let after = null
+        let before = null
+        for (const el of els) {
+          const value = Number(el.getAttribute('data-fd-turn'))
+          if (!Number.isSafeInteger(value)) continue
+          if (value === turn) return el
+          if (value > turn && after === null) after = el
+          if (value < turn) before = el
+        }
+        return after === null ? before : after
+      }
+
+      const scrollToSection = (el) => {
+        const scroller = scrollerRef.current ?? scrollRef.current
+        if (scroller === null || el === null) return
+        const delta = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+        const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+        if (typeof scroller.scrollBy === 'function') scroller.scrollBy({ top: delta, behavior: reduced ? 'auto' : 'smooth' })
+        else scroller.scrollTop += delta
+      }
+
+      const navigateToTurn = React.useCallback((item) => {
+        const el = sectionElementForTurn(item.turn)
+        if (item.anchor === 'loaded' || item.seq === null || typeof loadThrough !== 'function') {
+          if (el !== null) scrollToSection(el)
+          return
+        }
+        setBusyTurn(item.turn)
+        pendingJumpRef.current = item.turn
+        Promise.resolve(loadThrough(item.seq)).catch(() => {}).then(() => {
+          setSettleTick((tick) => tick + 1)
+        })
+        // A jump that never lands must not leave a mark pulsing forever.
+        window.setTimeout(() => {
+          if (pendingJumpRef.current === item.turn) {
+            pendingJumpRef.current = null
+            setBusyTurn(null)
+          }
+        }, 4000)
+      }, [loadThrough])
+
+      // Land a pending jump as soon as the paged-in Turn's section exists. No
+      // dependency list on purpose: the paged nodes can settle in a commit of
+      // their own, after the promise that asked for them. `settleTick` is read so
+      // that tick exists for exactly that re-check.
+      React.useEffect(() => {
+        void settleTick
+        const pending = pendingJumpRef.current
+        if (pending === null) return
+        const el = sectionElementForTurn(pending)
+        if (el === null) return
+        pendingJumpRef.current = null
+        setBusyTurn(null)
+        scrollToSection(el)
+      })
+
       const body = []
       if (hasMore && typeof loadOlder === 'function') body.push(React.createElement('button', { key: 'older', type: 'button', className: 'fd-older', disabled: loadingOlder, onClick: () => { loadOlder() } }, loadingOlder ? 'Loading older history\u2026' : 'Load older history'))
       body.push(React.createElement('div', { key: 'toggle', className: 'fd-toggle' },
@@ -948,7 +1597,21 @@ return {
             const section = model.sections[i]
             const aggregates = aggBySection.get(i)
             if (section.changes.length === 0 && (aggregates === undefined || aggregates.length === 0)) continue
-            body.push(React.createElement(Section, { key: `s-${i}`, section, startIndex: number, aggregates: aggregates === undefined ? [] : aggregates }))
+            const turn = sectionTurns[i]
+            const answerInfo = answerBySection[i]
+            body.push(React.createElement(Section, {
+              key: `s-${i}`,
+              section,
+              startIndex: number,
+              aggregates: aggregates === undefined ? [] : aggregates,
+              turn,
+              answer: answerInfo === null ? '' : answerInfo.text,
+              answerIsOwn: answerInfo !== null && answerInfo.own,
+              answerLoadSeq: answerInfo === null ? null : answerInfo.loadSeq,
+              active: turn !== null && activeTurn !== null ? turn === activeTurn : undefined,
+              onResize: notifyLayoutChange,
+              onLoadTurn: loadTurnMessages,
+            }))
             number += section.changes.length
           }
         } else {
@@ -962,7 +1625,17 @@ return {
         }
       }
       return React.createElement('div', { className: 'fd-view' },
-        React.createElement('div', { ref: scrollRef, className: 'fd-scroll' }, ...body))
+        React.createElement('div', { ref: scrollRef, className: 'fd-scroll' },
+          mode === 'session' && changeCount > 0
+            ? React.createElement(Rail, {
+              key: 'rail',
+              items: railItems,
+              activeTurn,
+              busyTurn,
+              onNavigate: navigateToTurn,
+            })
+            : null,
+          ...body))
     }
 
     ctx.effect(() => styles.insert(CSS))
@@ -977,6 +1650,9 @@ return {
         if (session === undefined) throw new Error(`diff view: session "${sessionId}" is unavailable`)
         return {
           loadOlder: () => session.loadOlder(),
+          // Turn-rail jumps page history through a specific Turn's `turn/start`
+          // seq, exactly as the Chat view does.
+          loadThrough: (seq) => session.loadThrough(seq),
         }
       },
     }, FilesView))

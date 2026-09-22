@@ -36,7 +36,9 @@ view alongside Chat and Trajectory that answers exactly that, in two modes:
 
 - **Timeline** — change entries grouped under the user message that prompted them.
   Each file changed more than once inside one message also gets a `Σ path` row: one
-  aggregated diff for that message's window, with `+a −b` counts.
+  aggregated diff for that message's window, with `+a −b` counts. When the loaded
+  history window starts mid-turn there is no user message for the oldest entries, so
+  that section keeps the same header chrome, labelled `Earlier messages not loaded`.
 - **File** — one cumulative diff per file across the whole session (conversation
   start → session end), with the individual changes available behind a toggle.
 
@@ -118,6 +120,10 @@ verify.
   the file's current on-disk content to be the session's end state. If the file was
   changed afterwards by another session or by hand, that file falls back to the
   per-change display rather than showing a wrong total.
+- **The oldest loaded section can be truncated.** A session window may begin mid-turn,
+  so the user message that opened the first section can sit outside it. That section is
+  labelled `Earlier messages not loaded` (keeping the same header style as the rest)
+  and becomes the real prompt once you use **Load older history**.
 - **Deletions are not tracked** in the session's diff metadata, so a file deleted (or
   deleted and recreated) at the end of a session can only be partially reconstructed
   and falls back to per-change display.

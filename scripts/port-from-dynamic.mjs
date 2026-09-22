@@ -89,7 +89,7 @@ const replaceOnce = (anchor, next, label) => {
 // 1. The returned plugin object becomes a named module export.
 replaceOnce(
   "return {\n  inject: ['slots', 'sessions'],",
-  "const plugin = {\n  name: 'chat-timeline-diff',\n  inject: ['slots', 'sessions', 'remote.workspaceFiles'],",
+  "const plugin = {\n  name: 'timeline-diff',\n  inject: ['slots', 'sessions', 'remote.workspaceFiles'],",
   'plugin object',
 )
 
@@ -158,7 +158,7 @@ replaceOnce(
   [
     '    ctx.effect(() => {',
     "      const style = document.createElement('style')",
-    "      style.setAttribute('data-dsh-plugin', 'chat-timeline-diff')",
+    "      style.setAttribute('data-dsh-plugin', 'timeline-diff')",
     '      style.textContent = CSS',
     '      document.head.appendChild(style)',
     '      return () => { style.remove() }',

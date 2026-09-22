@@ -114,7 +114,7 @@ const CSS = `
 let viewMode = 'session'
 
 const plugin = {
-  name: 'chat-timeline-diff',
+  name: 'timeline-diff',
   inject: ['slots', 'sessions', 'remote.workspaceFiles'],
   apply(ctx) {
     const slots = ctx.get('slots')
@@ -985,7 +985,7 @@ const plugin = {
 
     ctx.effect(() => {
       const style = document.createElement('style')
-      style.setAttribute('data-dsh-plugin', 'chat-timeline-diff')
+      style.setAttribute('data-dsh-plugin', 'timeline-diff')
       style.textContent = CSS
       document.head.appendChild(style)
       return () => { style.remove() }

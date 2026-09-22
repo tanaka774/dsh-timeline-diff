@@ -18,8 +18,11 @@ The feature is simple, you can see each file change per your conversation on you
 ## Install
 
 ```
-dsh plugin --profile web add "github:tanaka774/dsh-timeline-files-diff-plugin"
+dsh plugin --profile web add "github:tanaka774/dsh-timeline-diff"
 ```
+
+Then **restart `dsh web`** — bundle layers compose at boot, so a running server will
+not pick the plugin up until it restarts.
 
 ------
 
@@ -57,7 +60,7 @@ in one screen, scoped to the session you are looking at.
 Requires a DeepSeek Harness `web` profile (`dsh 0.1.5-rc.2` or a compatible rc).
 
 ```sh
-dsh plugin --profile web add "github:tanaka774/dsh-timeline-files-diff-plugin"
+dsh plugin --profile web add "github:tanaka774/dsh-timeline-diff"
 ```
 
 Then **restart `dsh web`** — bundle layers compose at boot, so a running server will
@@ -67,14 +70,14 @@ pick the **Files** tab in the header (rightmost, after Chat and Trajectory).
 Pin a commit if you want reproducible installs:
 
 ```sh
-dsh plugin --profile web add "github:tanaka774/dsh-timeline-files-diff-plugin#<commit>"
+dsh plugin --profile web add "github:tanaka774/dsh-timeline-diff#<commit>"
 ```
 
 Build output is committed to this repository, so the install needs **no build step
 and asks for no `allowBuilds` permission**. To uninstall:
 
 ```sh
-dsh plugin --profile web remove dsh-chat-timeline-diff
+dsh plugin --profile web remove dsh-timeline-diff
 ```
 
 <details>

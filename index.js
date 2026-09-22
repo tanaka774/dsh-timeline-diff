@@ -8,6 +8,6 @@
 // It is deliberately a no-op and injects nothing, so it mounts immediately and
 // can never keep the profile from booting.
 
-export const name = 'chat-timeline-diff'
+export const name = 'timeline-diff'
 
 export function apply() {}

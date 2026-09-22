@@ -9,5 +9,5 @@
 # Override or disable this row from a later layer by id:
 #   $DSH_HOME/profiles/<name>/cordis.patch.yml
 - insert:
-    - id: chat-timeline-diff
-      name: 'dsh-chat-timeline-diff'
+    - id: timeline-diff
+      name: 'dsh-timeline-diff'

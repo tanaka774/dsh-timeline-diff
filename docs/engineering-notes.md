@@ -11,7 +11,7 @@ client channel**:
 | File | Role |
 |---|---|
 | `package.json` | `dsh.bundle.patch` -> the composition layer; `dsh.client` (platform `web`) -> the browser module |
-| `cordis.patch.yml` | One `insert` row (`id: chat-timeline-diff`, `name: 'dsh-chat-timeline-diff'`) |
+| `cordis.patch.yml` | One `insert` row (`id: timeline-diff`, `name: 'dsh-timeline-diff'`) |
 | `index.js` | Host entry. Deliberately a no-op: the client module system discovers a package's `dsh.client` declaration from the host Loader entry, so the row is what makes the browser half load |
 | `src/client.js` | Client module source (CommonJS; `module.exports` is the Cordis plugin) |
 | `lib/client.js` | Built client bundle, wrapped in `window.__ModuleLoader__.load({ id, factory })`. **Committed on purpose** |
@@ -95,19 +95,19 @@ untouched):
 
 1. `dsh plugin --profile web add <path>` -> the dependency and the bundle layer are
    registered in `dsh.profile.bundles`.
-2. `dsh --profile web --dump-config` -> composes a `# == dsh-chat-timeline-diff`
+2. `dsh --profile web --dump-config` -> composes a `# == dsh-timeline-diff`
    layer with the expected row.
 3. `dsh --profile web --help` -> the whole plugin tree boots, exit 0, no
    `plugin tree failed to load`.
 4. Isolated boot on a scratch port -> the client module appears in `__DSH_BOOT__`
-   (`{"id":"dsh-chat-timeline-diff","url":"/plugins/??dsh-chat-timeline-diff/client.js…"}`
-   with the expected `inject`) and `/plugins/??dsh-chat-timeline-diff/client.js`
+   (`{"id":"dsh-timeline-diff","url":"/plugins/??dsh-timeline-diff/client.js…"}`
+   with the expected `inject`) and `/plugins/??dsh-timeline-diff/client.js`
    returns HTTP 200 with the expected bundle body.
 5. Factory smoke test: evaluating the bundle registers the id and the factory returns
    `{ name, inject, apply }`.
 6. **Negative control**: a copy declaring `dsh.client` with `exports["./client"]`
    removed fails the boot loudly —
-   `client-modules: dsh-chat-timeline-diff declares dsh.client but exports no "./client" bundle`, exit 1.
+   `client-modules: dsh-timeline-diff declares dsh.client but exports no "./client" bundle`, exit 1.
 
 Not yet performed: a real browser interaction (mount the tab, render a diff, click
 through Timeline/File). That needs a human at the UI and is the last acceptance step

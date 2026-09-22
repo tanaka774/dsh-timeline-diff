@@ -8,7 +8,8 @@
 
 The feature is simple, you can see each file change per your conversation on your "Diff" tab.
 
-[dsh-timeline-diff-demo.webm](https://github.com/user-attachments/assets/6e8f286e-99d0-4ffd-8141-24c2e0018fad)
+[dsh-timeline-diff-demo2.webm](https://github.com/user-attachments/assets/2b64d5b1-17ed-4a5f-9fe7-1f125ccbc64c)
+
 
 ## Motivation
 

@@ -69,13 +69,10 @@ const CSS = `
 .fd-line-del { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
 .fd-line-add .fd-sign { color: var(--dsw-alias-state-success-primary); }
 .fd-line-del .fd-sign { color: var(--dsw-alias-state-error-primary); }
-/* The dynamic Guard pins non-chain registrations at the lowest priority tier, so the
-   Files tab sorts leftmost in the view ring. Reorder the tablist visually with flex
-   order, scoped to the semantic tablist/tab roles, so the dynamic tab renders last. */
-[role='tablist'] { display: flex; }
-[role='tablist'] > [role='tab']:nth-child(1) { order: 3; }
-[role='tablist'] > [role='tab']:nth-child(2) { order: 1; }
-[role='tablist'] > [role='tab']:nth-child(3) { order: 2; }
+/* Tab placement is owned by the slot registry: the harness sorts conversation.view
+   entries by their order field (chat 0, trajectory 10, files 20), so the Files tab
+   already renders rightmost. Do NOT reorder the tablist with positional CSS here —
+   that assumes a fixed DOM order and flips the tabs whenever the harness changes it. */
 `
 
 let viewMode = 'session'

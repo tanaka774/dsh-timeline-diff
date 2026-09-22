@@ -1,0 +1,6 @@
+# Build output is committed on purpose (git-source installs get working artifacts
+# without running a build). Do not ignore lib/.
+node_modules/
+.verify/
+*.log
+.DS_Store

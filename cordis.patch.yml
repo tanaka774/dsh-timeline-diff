@@ -1,0 +1,13 @@
+# Chat Timeline File Diff Viewer — the bundle layer this package contributes.
+#
+# Applied after every earlier bundle in the profile's `dsh.profile.bundles`, and
+# before the profile's own cordis.patch.yml. One row is all this package needs:
+# it mounts the host entry, and the client module system discovers the
+# `dsh.client` declaration from that loader entry to serve lib/client.js into
+# the browser. The host entry is a no-op; every behavior lives in the client half.
+#
+# Override or disable this row from a later layer by id:
+#   $DSH_HOME/profiles/<name>/cordis.patch.yml
+- insert:
+    - id: chat-timeline-diff
+      name: 'dsh-chat-timeline-diff'

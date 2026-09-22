@@ -1,0 +1,41 @@
+{
+  "name": "dsh-chat-timeline-diff",
+  "version": "0.1.0",
+  "description": "Chat Timeline File Diff Viewer: a Files tab that shows every file change in a session as diffs, grouped by the message that caused it (DeepSeek Harness plugin)",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanaka774/dsh-timeline-files-diff-plugin.git"
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "port": "node scripts/port-from-dynamic.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-gateway"
+      ]
+    }
+  }
+}

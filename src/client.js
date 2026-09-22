@@ -1,0 +1,1003 @@
+// Chat Timeline File Diff Viewer — client module source.
+//
+// This is the `dsh.client` half of the package: a plain CommonJS module whose
+// exports the client module runtime mounts as a Cordis plugin. The build step
+// (`scripts/build-client.mjs`) wraps this file in
+// `window.__ModuleLoader__.load({ id, factory })` to produce `lib/client.js`.
+//
+// On-disk content is read through the harness's own `remote.workspaceFiles`
+// Remote namespace (session-scoped, sandbox-bounded). This package ships no
+// custom host RPC.
+//
+// Data model note: the persisted session log carries, per write/edit call, only
+// contextual hunks (changed region +/- 3 context lines) — never the full "before"
+// content of a file that already existed. Cumulative per-file diffs are therefore
+// reconstructed: the current on-disk content is walked BACKWARD by undoing every
+// recorded hunk (each step must match exactly once), which yields the content at
+// any earlier point of the conversation; created files are walked FORWARD from
+// their first full content. Any failed step makes that file fall back to the
+// plain per-change rendering — never wrong data.
+
+const React = require('react')
+
+/** Decode a base64 byte payload from the workspaceFiles Remote into UTF-8 text. */
+const b64ToText = (data) => {
+  const binary = atob(data)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return new TextDecoder('utf-8').decode(bytes)
+}
+
+/**
+ * Read one complete file's current content through the session-scoped
+ * workspaceFiles Remote. Returns null when the file is absent, unreadable,
+ * outside the session workspace, binary (NUL), or otherwise unavailable, so the
+ * caller falls back to per-change rendering.
+ */
+const readWorkspaceFile = async (remote, sessionId, path) => {
+  if (remote === undefined || remote === null) return null
+  try {
+    const result = await remote.readAll(sessionId, path)
+    if (result === null || typeof result !== 'object' || result.ok !== true) return null
+    const value = result.value
+    if (value === null || typeof value !== 'object' || typeof value.data !== 'string') return null
+    const text = b64ToText(value.data)
+    return text.indexOf('\u0000') === -1 ? text : null
+  } catch (error) {
+    return null
+  }
+}
+
+const CSS = `
+.fd-view { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+/* The session body owns the scrollport ([data-conversation-scroll]): the view area
+   grows with content, so this container must NOT clip — an overflow:auto here would
+   make it the nearest scroll container and pin the sticky headers against a scroller
+   that never moves. The runtime binds the sticky measurement to the real scroller. */
+.fd-scroll { flex: 1 1 auto; min-height: 0; overflow: visible; padding: 16px 20px; display: flex; flex-direction: column; gap: 6px; }
+.fd-summary { color: var(--dsw-alias-label-secondary); font-size: 12px; margin: 2px 4px 6px; }
+.fd-empty { color: var(--dsw-alias-label-secondary); font-size: 13px; padding: 24px 4px; }
+.fd-older { align-self: flex-start; margin: 2px 4px 6px; padding: 4px 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; cursor: pointer; }
+.fd-older:disabled { opacity: 0.6; cursor: default; }
+.fd-toggle { align-self: flex-start; display: inline-flex; gap: 2px; margin: 2px 4px 6px; padding: 2px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 6px; background: var(--dsw-alias-bg-layer-1); }
+.fd-toggle button { border: none; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer; }
+.fd-toggle button.fd-toggle-active { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.fd-section { display: flex; flex-direction: column; gap: 6px; }
+.fd-section-user { position: sticky; top: 0; z-index: 3; display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, var(--dsw-alias-bg-layer-1)); color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.fd-section-user:hover { border-color: var(--dsw-alias-brand-primary); }
+.fd-section-user-row { display: flex; align-items: center; gap: 8px; }
+.fd-section-user-chevron { flex: none; width: 1em; color: var(--dsw-alias-label-secondary); transition: transform 0.15s ease; }
+.fd-section-user.fd-section-open .fd-section-user-chevron { transform: rotate(90deg); }
+.fd-section-user-text { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.fd-section-user-count { flex: none; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.fd-section-user-files { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.fd-section-user.fd-section-closed { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, var(--dsw-alias-bg-layer-2)); }
+.fd-section-user.fd-section-closed .fd-section-user-text { color: var(--dsw-alias-label-secondary); font-weight: 400; }
+.fd-change { position: sticky; top: var(--fd-sticky-offset, 0px); z-index: 2; display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 8px; border: none; border-radius: 6px; background: none; color: var(--dsw-alias-label-primary); font: inherit; text-align: left; cursor: pointer; }
+.fd-change:hover { background: var(--dsw-alias-bg-layer-2); }
+.fd-change.fd-stuck { background: var(--dsw-alias-bg-layer-1); box-shadow: 0 1px 0 0 var(--dsw-alias-border-l1); }
+.fd-change-index { flex: none; min-width: 3ch; color: var(--dsw-alias-label-secondary); font-size: 12px; text-align: right; }
+.fd-change-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+/* One cumulative (aggregated) diff per file — timeline "total in this message" rows.
+   The row header is sticky inside its own .fd-total-body containing block, so
+   while scrolling a long diff the file name stays visible, and consecutive
+   file rows pin one at a time without overlapping. */
+.fd-total { position: sticky; top: var(--fd-sticky-offset, 0px); z-index: 2; display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 6px 8px; border: none; border-radius: 6px; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent); color: var(--dsw-alias-label-primary); font: inherit; text-align: left; cursor: pointer; }
+.fd-total:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 13%, transparent); }
+.fd-total.fd-stuck { box-shadow: 0 1px 0 0 var(--dsw-alias-border-l1); }
+.fd-total-mark { flex: none; min-width: 3ch; color: var(--dsw-alias-brand-primary); font-size: 12px; text-align: right; font-weight: 600; }
+.fd-total-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.fd-total-meta { flex: 1 1 auto; text-align: right; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.fd-total-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 10px 8px; }
+.fd-reason { color: var(--dsw-alias-label-secondary); font-size: 11px; padding: 0 10px 4px; }
+.fd-netzero { color: var(--dsw-alias-label-secondary); font-size: 12px; padding: 4px 10px 6px; }
+.fd-inset { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 4px; }
+.fd-inset .fd-older { margin: 0 8px; }
+.fd-hunk { border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
+.fd-line { display: flex; gap: 10px; padding: 0 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.7; }
+.fd-sign { flex: none; width: 1ch; color: var(--dsw-alias-label-secondary); user-select: none; }
+.fd-text { white-space: pre; overflow-wrap: anywhere; }
+.fd-line-add { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); }
+.fd-line-del { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
+.fd-line-add .fd-sign { color: var(--dsw-alias-state-success-primary); }
+.fd-line-del .fd-sign { color: var(--dsw-alias-state-error-primary); }
+/* The dynamic Guard pins non-chain registrations at the lowest priority tier, so the
+   Files tab sorts leftmost in the view ring. Reorder the tablist visually with flex
+   order, scoped to the semantic tablist/tab roles, so the dynamic tab renders last. */
+[role='tablist'] { display: flex; }
+[role='tablist'] > [role='tab']:nth-child(1) { order: 3; }
+[role='tablist'] > [role='tab']:nth-child(2) { order: 1; }
+[role='tablist'] > [role='tab']:nth-child(3) { order: 2; }
+`
+
+let viewMode = 'session'
+
+const plugin = {
+  name: 'chat-timeline-diff',
+  inject: ['slots', 'sessions', 'remote.workspaceFiles'],
+  apply(ctx) {
+    const slots = ctx.get('slots')
+    if (slots === undefined) return
+
+    const remoteFiles = ctx.get('remote.workspaceFiles')
+
+    // ------------------------------------------------------------------ //
+    // Pure core (kept contiguous for offline unit tests between markers) //
+    // ------------------------------------------------------------------ //
+    // __fd-core-begin
+
+    const isFileDiff = (d) => d !== null && typeof d === 'object' && typeof d.path === 'string' && typeof d.newText === 'string'
+
+    const relativize = (path, cwd) => {
+      if (cwd === undefined || cwd === '') return path
+      const root = cwd.replace(/[/\\]+$/, '')
+      if (path.startsWith(`${root}/`) || path.startsWith(`${root}\\`)) return path.slice(root.length + 1)
+      return path
+    }
+
+    // Whole-file diff recovered from a persisted `write` call head. The platform
+    // itself renders a create card from the call arguments when the result meta
+    // carries no hunks, so this mirrors that fallback for the log's own shape.
+    const diffFromWriteCall = (argsRaw) => {
+      if (typeof argsRaw !== 'string' || argsRaw === '') return null
+      let args = null
+      try { args = JSON.parse(argsRaw) } catch (error) { return null }
+      if (args === null || typeof args !== 'object') return null
+      const path = args.file_path !== undefined ? args.file_path : (args.filePath !== undefined ? args.filePath : args.path)
+      const content = args.content
+      if (typeof path !== 'string' || typeof content !== 'string') return null
+      return { path, oldText: null, newText: content }
+    }
+
+    const extractHunks = (node) => {
+      if (node.kind !== 'tool-result' || node.isError) return null
+      const meta = node.meta
+      let hasMetaDiffs = false
+      if (meta !== null && typeof meta === 'object' && Array.isArray(meta.diffs)) {
+        hasMetaDiffs = true
+        const diffs = meta.diffs.filter(isFileDiff)
+        if (diffs.length > 0) return diffs
+      }
+      // Older harness layouts exposed per-change cards as persisted views.
+      const result = node.resultView
+      if (result !== null && result !== undefined && result.card === 'diff' && Array.isArray(result.diffs)) {
+        const diffs = result.diffs.filter(isFileDiff)
+        if (diffs.length > 0) return diffs
+      }
+      const call = node.callView
+      if (call !== null && call !== undefined && call.card === 'diff' && Array.isArray(call.diffs)) {
+        return call.diffs.filter(isFileDiff)
+      }
+      // Current harness: a create (and a no-op write) persists `meta.diffs: []`;
+      // the node only carries the persisted call head, so fall back to the call
+      // arguments — the whole-file content — for `write` calls.
+      const callHead = node.call !== null && typeof node.call === 'object' ? node.call : null
+      if (callHead !== null && callHead.name === 'write' && typeof callHead.argsRaw === 'string') {
+        const fallback = diffFromWriteCall(callHead.argsRaw)
+        if (fallback !== null) return [fallback]
+      }
+      if (hasMetaDiffs) return null
+      return null
+    }
+
+    const userText = (node) => {
+      let text = ''
+      for (const block of node.content) {
+        if (block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+          text += (text === '' ? '' : ' ') + block.text
+        }
+      }
+      const trimmed = text.trim()
+      return trimmed.length > 160 ? `${trimmed.slice(0, 160)}…` : trimmed
+    }
+
+    const splitLines = (text) => {
+      const body = text.endsWith('\n') ? text.slice(0, -1) : text
+      return body === '' ? [] : body.split('\n')
+    }
+
+    // Line endings are LF-normalized by the filesystem backend, so normalize
+    // hunk text and disk content to the same basis before substring matching.
+    const canonText = (text) => {
+      if (text === null || text === undefined) return ''
+      return String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    }
+
+    // -1 missing, -2 ambiguous, >= 0 the single occurrence.
+    const findIndex = (text, needle) => {
+      const i = text.indexOf(needle)
+      if (i === -1) return -1
+      if (text.indexOf(needle, i + 1) !== -1) return -2
+      return i
+    }
+
+    const replaceAt = (text, at, len, next) => text.slice(0, at) + next + text.slice(at + len)
+
+    // Forward: apply one tool-call's hunks (same "before" state) to `state`.
+    // Hunks of one call are splices against one pre-call text, so match
+    // positions are resolved up front and applied tail-to-head.
+    // A hunk with oldText === null is a whole-content set (create into an
+    // empty/absent file) and is only valid when the state is empty.
+    const applyEvent = (state, hunks) => {
+      const subs = []
+      let whole = null
+      for (const h of hunks) {
+        if (h.oldText === null || h.oldText === undefined) {
+          if (state !== '') return { ok: false }
+          whole = h.newText
+        } else {
+          const at = findIndex(state, h.oldText)
+          if (at < 0) return { ok: false }
+          subs.push({ at, len: h.oldText.length, next: h.newText })
+        }
+      }
+      subs.sort((a, b) => b.at - a.at)
+      let cur = state
+      for (const op of subs) cur = replaceAt(cur, op.at, op.len, op.next)
+      if (whole !== null) cur = whole
+      return { state: cur, ok: true }
+    }
+
+    // Backward: undo one tool-call's hunks (the inverse of applyEvent).
+    const undoEvent = (state, hunks) => {
+      const subs = []
+      let whole = null
+      for (const h of hunks) {
+        if (h.oldText === null || h.oldText === undefined) {
+          if (state !== h.newText) return { ok: false }
+          whole = ''
+        } else {
+          const at = findIndex(state, h.newText)
+          if (at < 0) return { ok: false }
+          subs.push({ at, len: h.newText.length, next: h.oldText })
+        }
+      }
+      subs.sort((a, b) => b.at - a.at)
+      let cur = state
+      for (const op of subs) cur = replaceAt(cur, op.at, op.len, op.next)
+      if (whole !== null) cur = whole
+      return { state: cur, ok: true }
+    }
+
+    // Group a conversation snapshot's file changes.
+    // sections: per user message, the chronological per-hunk entries (identical
+    //   semantics/order to the original Timeline view).
+    // files: per path, the ordered change events; one event = one tool call's
+    //   hunks for that file, tagged with the section it happened in.
+    const buildModel = (nodes, cwd) => {
+      if (!Array.isArray(nodes)) return { sections: [], files: [] }
+      const sections = []
+      const byPath = new Map()
+      let current = null
+      for (const node of nodes) {
+        if (node.kind === 'user') {
+          current = { user: userText(node), changes: [] }
+          sections.push(current)
+          continue
+        }
+        const diffs = extractHunks(node)
+        if (diffs === null) continue
+        if (current === null) {
+          current = { user: null, changes: [] }
+          sections.push(current)
+        }
+        const sec = sections.length - 1
+        const byFile = new Map()
+        for (const d of diffs) {
+          const path = relativize(d.path, cwd)
+          let rec = byPath.get(path)
+          if (rec === undefined) {
+            rec = { path, events: [] }
+            byPath.set(path, rec)
+          }
+          let ev = byFile.get(path)
+          if (ev === undefined) {
+            ev = { sec, hunks: [] }
+            byFile.set(path, ev)
+          }
+          const oldText = d.oldText === null ? null : canonText(d.oldText)
+          const newText = canonText(d.newText)
+          ev.hunks.push({ oldText, newText })
+          current.changes.push({ path, oldText, newText })
+        }
+        for (const [path, ev] of byFile) byPath.get(path).events.push(ev)
+      }
+      return { sections, files: [...byPath.values()] }
+    }
+
+    // Reconstruct the content of a file at every event boundary.
+    // states[i] = content BEFORE event i (states[0] = at conversation start,
+    // states[n] = after the last event).
+    //   created file  -> forward walk from the first full content.
+    //   pre-existing  -> backward walk from the current disk content.
+    const buildPlan = (file, disk) => {
+      const events = file.events
+      if (events.length === 0) return { ok: false, reason: '' }
+      let size = 0
+      for (const ev of events) {
+        for (const h of ev.hunks) {
+          size += (h.oldText === null ? 0 : h.oldText.length) + h.newText.length
+        }
+      }
+      if (events.length > 300 || size > 8e6) {
+        return { ok: false, reason: 'file too large for a cumulative diff — showing individual changes.' }
+      }
+      const created = events[0].hunks.length === 1 && (events[0].hunks[0].oldText === null || events[0].hunks[0].oldText === undefined)
+      const states = new Array(events.length + 1)
+      if (created) {
+        states[0] = ''
+        let cur = events[0].hunks[0].newText
+        states[1] = cur
+        for (let i = 1; i < events.length; i += 1) {
+          const r = applyEvent(cur, events[i].hunks)
+          if (!r.ok) {
+            return { ok: false, reason: 'history is not fully reconstructible (a change no longer matches) — showing individual changes.' }
+          }
+          cur = r.state
+          states[i + 1] = cur
+        }
+        return { ok: true, created: true, states, diverged: disk !== null && disk !== cur }
+      }
+      if (disk === null) {
+        return { ok: false, reason: 'current file content is unavailable (deleted or unreadable) — showing individual changes.' }
+      }
+      let cur = disk
+      states[events.length] = cur
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const r = undoEvent(cur, events[i].hunks)
+        if (!r.ok) {
+          return { ok: false, reason: 'file content no longer matches this session\u2019s changes (edited outside it?) — showing individual changes.' }
+        }
+        cur = r.state
+        states[i] = cur
+      }
+      return { ok: true, created: false, states, diverged: false }
+    }
+
+    // ---- line diff (patience + small LCS, patch-style output) ----
+
+    const dpEmit = (ops, A, B, aLo, aHi, bLo, bHi) => {
+      const na = aHi - aLo
+      const nb = bHi - bLo
+      const dp = new Array(na + 1)
+      dp[0] = new Int32Array(nb + 1)
+      for (let i = 1; i <= na; i += 1) {
+        const prev = dp[i - 1]
+        const row = new Int32Array(nb + 1)
+        for (let j = 1; j <= nb; j += 1) {
+          if (A[aLo + i - 1] === B[bLo + j - 1]) row[j] = prev[j - 1] + 1
+          else row[j] = prev[j] >= row[j - 1] ? prev[j] : row[j - 1]
+        }
+        dp[i] = row
+      }
+      const tmp = []
+      let i = na
+      let j = nb
+      while (i > 0 && j > 0) {
+        if (A[aLo + i - 1] === B[bLo + j - 1]) {
+          tmp.push({ k: 'eq', line: A[aLo + i - 1] })
+          i -= 1
+          j -= 1
+        } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+          tmp.push({ k: 'del', line: A[aLo + i - 1] })
+          i -= 1
+        } else {
+          tmp.push({ k: 'add', line: B[bLo + j - 1] })
+          j -= 1
+        }
+      }
+      while (i > 0) {
+        tmp.push({ k: 'del', line: A[aLo + i - 1] })
+        i -= 1
+      }
+      while (j > 0) {
+        tmp.push({ k: 'add', line: B[bLo + j - 1] })
+        j -= 1
+      }
+      for (let t = tmp.length - 1; t >= 0; t -= 1) ops.push(tmp[t])
+    }
+
+    // Emit ops for A[aLo..aHi) vs B[bLo..bHi) (both sides may differ).
+    const solveRange = (ops, A, B, aLo, aHi, bLo, bHi) => {
+      if (aLo >= aHi) {
+        for (let i = bLo; i < bHi; i += 1) ops.push({ k: 'add', line: B[i] })
+        return
+      }
+      if (bLo >= bHi) {
+        for (let i = aLo; i < aHi; i += 1) ops.push({ k: 'del', line: A[i] })
+        return
+      }
+      while (aLo < aHi && bLo < bHi && A[aLo] === B[bLo]) {
+        ops.push({ k: 'eq', line: A[aLo] })
+        aLo += 1
+        bLo += 1
+      }
+      if (aLo >= aHi) {
+        for (let i = bLo; i < bHi; i += 1) ops.push({ k: 'add', line: B[i] })
+        return
+      }
+      if (bLo >= bHi) {
+        for (let i = aLo; i < aHi; i += 1) ops.push({ k: 'del', line: A[i] })
+        return
+      }
+      let tail = 0
+      while (tail < aHi - aLo && tail < bHi - bLo && A[aHi - 1 - tail] === B[bHi - 1 - tail]) tail += 1
+      const ma = aHi - tail
+      const mb = bHi - tail
+      const na = ma - aLo
+      const nb = mb - bLo
+      if (na > 0 && nb > 0 && na * nb <= 24000) {
+        dpEmit(ops, A, B, aLo, ma, bLo, mb)
+      } else if (na === 0) {
+        for (let i = bLo; i < mb; i += 1) ops.push({ k: 'add', line: B[i] })
+      } else if (nb === 0) {
+        for (let i = aLo; i < ma; i += 1) ops.push({ k: 'del', line: A[i] })
+      } else {
+        // Patience anchors over lines unique in both sub-ranges.
+        const countA = new Map()
+        const countB = new Map()
+        for (let i = aLo; i < ma; i += 1) countA.set(A[i], (countA.get(A[i]) || 0) + 1)
+        for (let i = bLo; i < mb; i += 1) countB.set(B[i], (countB.get(B[i]) || 0) + 1)
+        const pairs = []
+        for (let i = aLo; i < ma; i += 1) {
+          const line = A[i]
+          if (countA.get(line) !== 1 || countB.get(line) !== 1) continue
+          for (let j = bLo; j < mb; j += 1) {
+            if (B[j] === line) {
+              pairs.push({ a: i, b: j })
+              break
+            }
+          }
+        }
+        if (pairs.length === 0) {
+          for (let i = aLo; i < ma; i += 1) ops.push({ k: 'del', line: A[i] })
+          for (let i = bLo; i < mb; i += 1) ops.push({ k: 'add', line: B[i] })
+          for (let i = 0; i < tail; i += 1) ops.push({ k: 'eq', line: A[aHi - tail + i] })
+          return
+        }
+        // Longest increasing subsequence of `b` over ascending `a`.
+        const nodes = []
+        const tails = []
+        for (const pair of pairs) {
+          let lo = 0
+          let hi = tails.length
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1
+            if (nodes[tails[mid]].b >= pair.b) hi = mid
+            else lo = mid + 1
+          }
+          const prev = lo > 0 ? tails[lo - 1] : -1
+          nodes.push({ a: pair.a, b: pair.b, prev })
+          tails[lo] = nodes.length - 1
+        }
+        const anchors = []
+        let cur = tails.length > 0 ? tails[tails.length - 1] : -1
+        while (cur !== -1) {
+          anchors.push({ a: nodes[cur].a, b: nodes[cur].b })
+          cur = nodes[cur].prev
+        }
+        anchors.reverse()
+        if (anchors.length === 0) {
+          for (let i = aLo; i < ma; i += 1) ops.push({ k: 'del', line: A[i] })
+          for (let i = bLo; i < mb; i += 1) ops.push({ k: 'add', line: B[i] })
+        } else {
+          let pa = aLo
+          let pb = bLo
+          for (const anchor of anchors) {
+            solveRange(ops, A, B, pa, anchor.a, pb, anchor.b)
+            ops.push({ k: 'eq', line: A[anchor.a] })
+            pa = anchor.a + 1
+            pb = anchor.b + 1
+          }
+          solveRange(ops, A, B, pa, ma, pb, mb)
+        }
+      }
+      for (let i = 0; i < tail; i += 1) ops.push({ k: 'eq', line: A[aHi - tail + i] })
+    }
+
+    const opsFor = (A, B) => {
+      const ops = []
+      solveRange(ops, A, B, 0, A.length, 0, B.length)
+      return ops
+    }
+
+    const rowOf = (op) => {
+      if (op.k === 'eq') return { kind: 'ctx', text: op.line }
+      return { kind: op.k, text: op.line }
+    }
+
+    // Patch-style rows: change runs plus up to `ctxN` context lines around them.
+    const buildRows = (ops, ctxN) => {
+      const rows = []
+      if (ops.length === 0) return rows
+      const runs = []
+      let i = 0
+      while (i < ops.length) {
+        if (ops[i].k !== 'eq') {
+          let j = i
+          while (j < ops.length && ops[j].k !== 'eq') j += 1
+          runs.push([i, j])
+          i = j
+        } else i += 1
+      }
+      const merged = []
+      for (const run of runs) {
+        if (merged.length === 0) {
+          merged.push([run[0], run[1]])
+          continue
+        }
+        const last = merged[merged.length - 1]
+        if (run[0] - last[1] < 2 * ctxN) last[1] = run[1]
+        else merged.push([run[0], run[1]])
+      }
+      for (const [rs, re] of merged) {
+        let p = rs - 1
+        let c = 0
+        while (p >= 0 && ops[p].k === 'eq' && c < ctxN) {
+          p -= 1
+          c += 1
+        }
+        for (let k = p + 1; k < rs; k += 1) rows.push(rowOf(ops[k]))
+        for (let k = rs; k < re; k += 1) rows.push(rowOf(ops[k]))
+        let q = re
+        c = 0
+        while (q < ops.length && ops[q].k === 'eq' && c < ctxN) {
+          q += 1
+          c += 1
+        }
+        for (let k = re; k < q; k += 1) rows.push(rowOf(ops[k]))
+      }
+      return rows
+    }
+
+    // Cumulative diff between two whole file contents (already canonical).
+    const computeDiff = (before, after) => {
+      const aText = before === null || before === undefined ? '' : canonText(String(before))
+      const bText = after === null || after === undefined ? '' : canonText(String(after))
+      const A = splitLines(aText)
+      const B = splitLines(bText)
+      let s = 0
+      while (s < A.length && s < B.length && A[s] === B[s]) s += 1
+      let eA = A.length
+      let eB = B.length
+      while (eA > s && eB > s && A[eA - 1] === B[eB - 1]) {
+        eA -= 1
+        eB -= 1
+      }
+      const ops = []
+      solveRange(ops, A, B, s, eA, s, eB)
+      let adds = 0
+      let dels = 0
+      for (const op of ops) {
+        if (op.k === 'add') adds += 1
+        else if (op.k === 'del') dels += 1
+      }
+      return {
+        rows: buildRows(ops, 3),
+        adds,
+        dels,
+        same: aText === bText,
+      }
+    }
+
+    // __fd-core-end
+
+    // ------------------------------------------------------------------ //
+    // Timeline section with per-message cumulative ("total") rows          //
+    // ------------------------------------------------------------------ //
+    const Hunk = ({ hunk }) => {
+      const lines = hunkLines(hunk.oldText, hunk.newText)
+      const rows = lines.map((line, index) => React.createElement('div', { key: index, className: `fd-line fd-line-${line.kind}` },
+        React.createElement('span', { className: 'fd-sign' }, line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '),
+        React.createElement('span', { className: 'fd-text' }, line.text)))
+      return React.createElement('div', { className: 'fd-hunk' }, ...rows)
+    }
+
+    const hunkLines = (oldText, newText) => {
+      const oldLines = oldText === null ? [] : splitLines(oldText)
+      const newLines = splitLines(newText)
+      let start = 0
+      while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start += 1
+      let oldEnd = oldLines.length
+      let newEnd = newLines.length
+      while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) { oldEnd -= 1; newEnd -= 1 }
+      const out = []
+      for (let i = 0; i < start; i += 1) out.push({ kind: 'ctx', text: oldLines[i] })
+      for (let i = start; i < oldEnd; i += 1) out.push({ kind: 'del', text: oldLines[i] })
+      for (let i = start; i < newEnd; i += 1) out.push({ kind: 'add', text: newLines[i] })
+      for (let i = oldEnd; i < oldLines.length; i += 1) out.push({ kind: 'ctx', text: oldLines[i] })
+      return out
+    }
+
+    const RowLines = ({ rows }) => {
+      const elements = rows.map((line, index) => React.createElement('div', { key: index, className: `fd-line fd-line-${line.kind}` },
+        React.createElement('span', { className: 'fd-sign' }, line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '),
+        React.createElement('span', { className: 'fd-text' }, line.text)))
+      return React.createElement('div', { className: 'fd-hunk' }, ...elements)
+    }
+
+    // Renders the cumulative diff for a before/after pair; yields the stats.
+    const useCumulative = (before, after) => React.useMemo(() => computeDiff(before, after), [before, after])
+
+    const CumulativeBody = ({ before, after }) => {
+      const diff = useCumulative(before, after)
+      if (diff.rows.length === 0) {
+        return React.createElement('div', { className: 'fd-netzero' }, 'No net change in this window.')
+      }
+      return React.createElement(RowLines, { rows: diff.rows })
+    }
+
+    const ChangeEntry = ({ entry, index, ordinal, total }) => {
+      const [open, setOpen] = React.useState(true)
+      const header = React.createElement('button', { type: 'button', className: 'fd-change', onClick: () => setOpen(!open) },
+        React.createElement('span', { className: 'fd-change-path' }, entry.path),
+        ordinal === undefined ? null : React.createElement('span', { className: 'fd-change-index' }, `${ordinal}/${total}`))
+      if (!open) return header
+      return React.createElement(React.Fragment, null, header, React.createElement(Hunk, { hunk: entry }))
+    }
+
+    // "path — total diff of one file within one user-message window."
+    const FileTotalRow = ({ agg }) => {
+      const [open, setOpen] = React.useState(true)
+      const diff = useCumulative(agg.before, agg.after)
+      const meta = `+${diff.adds} \u2212${diff.dels} \u00b7 ${agg.hunks} change${agg.hunks === 1 ? '' : 's'} in this message`
+      const header = React.createElement('button', { type: 'button', className: 'fd-total', onClick: () => setOpen(!open) },
+        React.createElement('span', { className: 'fd-total-path' }, agg.path),
+        React.createElement('span', { className: 'fd-total-meta' }, meta))
+      if (!open) return React.createElement('div', { className: 'fd-total-body' }, header)
+      return React.createElement('div', { className: 'fd-total-body' },
+        header,
+        React.createElement(CumulativeBody, { before: agg.before, after: agg.after }))
+    }
+
+    const Section = ({ section, startIndex, aggregates }) => {
+      const [open, setOpen] = React.useState(true)
+      const [showDetails, setShowDetails] = React.useState(false)
+      const count = section.changes.length
+      const uniquePaths = []
+      const seen = new Set()
+      for (const change of section.changes) {
+        if (!seen.has(change.path)) {
+          seen.add(change.path)
+          uniquePaths.push(change.path)
+        }
+      }
+      // One uniform total row per file (1 change or many). Files with ≥ 2
+      // changes in this message additionally keep their per-change hunks
+      // hidden behind a single message-wide toggle. Files whose history could
+      // not be reconstructed (no total row) fall back to visible per-change
+      // entries.
+      const covered = new Set()
+      const multiPaths = new Map()
+      let hiddenCount = 0
+      for (const agg of aggregates) {
+        covered.add(agg.path)
+        if (agg.hunks >= 2) {
+          multiPaths.set(agg.path, agg.hunks)
+          hiddenCount += agg.hunks
+        }
+      }
+      const entries = []
+      for (const agg of aggregates) {
+        entries.push(React.createElement(FileTotalRow, { key: `total-${agg.path}`, agg }))
+      }
+      if (hiddenCount > 0) {
+        entries.push(React.createElement('div', { key: 'detail', className: 'fd-inset' },
+          React.createElement('button', { type: 'button', className: 'fd-older', onClick: () => setShowDetails(!showDetails) },
+            showDetails ? `Hide ${hiddenCount} individual change${hiddenCount === 1 ? '' : 's'}` : `Show ${hiddenCount} individual change${hiddenCount === 1 ? '' : 's'}`)))
+      }
+      if (showDetails) {
+        const ordinals = new Map()
+        for (let i = 0; i < section.changes.length; i += 1) {
+          const change = section.changes[i]
+          if (!multiPaths.has(change.path)) continue
+          const ordinal = (ordinals.get(change.path) || 0) + 1
+          ordinals.set(change.path, ordinal)
+          entries.push(React.createElement(ChangeEntry, { key: `c-${startIndex + i}`, entry: change, index: startIndex + i, ordinal, total: multiPaths.get(change.path) }))
+        }
+      }
+      for (let i = 0; i < section.changes.length; i += 1) {
+        const change = section.changes[i]
+        if (covered.has(change.path)) continue
+        entries.push(React.createElement(ChangeEntry, { key: `f-${startIndex + i}`, entry: change, index: startIndex + i }))
+      }
+      if (section.user === null) {
+        if (!open) return null
+        return React.createElement('div', { className: 'fd-section' }, ...entries)
+      }
+      const header = React.createElement('button', { type: 'button', className: open ? 'fd-section-user fd-section-open' : 'fd-section-user fd-section-closed', onClick: () => setOpen(!open) },
+        React.createElement('span', { className: 'fd-section-user-row' },
+          React.createElement('span', { className: 'fd-section-user-chevron' }, '\u25b8'),
+          React.createElement('span', { className: 'fd-section-user-text' }, section.user),
+          React.createElement('span', { className: 'fd-section-user-count' }, `${count} change${count === 1 ? '' : 's'}`)),
+        open ? null : React.createElement('span', { className: 'fd-section-user-files' }, uniquePaths.join(' \u00b7 ')))
+      if (!open) return React.createElement('div', { className: 'fd-section' }, header)
+      return React.createElement('div', { className: 'fd-section' }, header, ...entries)
+    }
+
+    // ------------------------------------------------------------------ //
+    // File mode: one cumulative diff per file                             //
+    // ------------------------------------------------------------------ //
+    const FileGroup = ({ path, group }) => {
+      const [open, setOpen] = React.useState(true)
+      const [showDetail, setShowDetail] = React.useState(false)
+      const plan = group.plan
+      const totalBefore = plan.ok ? plan.states[0] : ''
+      const totalAfter = plan.ok ? plan.states[plan.states.length - 1] : ''
+      const diff = useCumulative(totalBefore, totalAfter)
+      const suffixParts = []
+      if (plan.created) suffixParts.push('new file')
+      if (plan.ok) suffixParts.push(`+${diff.adds} \u2212${diff.dels}`)
+      const suffix = suffixParts.length === 0 ? '' : ` \u00b7 ${suffixParts.join(' \u00b7 ')}`
+      const header = React.createElement('button', { type: 'button', className: 'fd-change', onClick: () => setOpen(!open) },
+        React.createElement('span', { className: 'fd-change-path' }, path),
+        React.createElement('span', { className: 'fd-change-index' }, `${group.changeCount} change${group.changeCount === 1 ? '' : 's'}${suffix}`))
+      if (!open) return React.createElement('div', { className: 'fd-section' }, header)
+      const body = []
+      if (plan.ok) {
+        body.push(React.createElement(CumulativeBody, { key: 'total', before: plan.states[0], after: plan.states[plan.states.length - 1] }))
+        if (plan.diverged) {
+          body.push(React.createElement('div', { key: 'diverged', className: 'fd-reason' },
+            'Note: this file was also modified after this session; the cumulative diff below covers the session\u2019s changes only.'))
+        }
+        body.push(React.createElement('div', { key: 'detail', className: 'fd-inset' },
+          React.createElement('button', { type: 'button', className: 'fd-older', onClick: () => setShowDetail(!showDetail) },
+            showDetail ? 'Hide individual changes' : `Show ${group.changeCount} individual change${group.changeCount === 1 ? '' : 's'}`),
+          showDetail ? group.hunks.map((hunk, index) => React.createElement(Hunk, { key: index, hunk })) : null))
+      } else {
+        if (plan.reason !== '') {
+          body.push(React.createElement('div', { key: 'reason', className: 'fd-reason' }, plan.reason))
+        }
+        body.push(React.createElement('div', { key: 'hunks', className: 'fd-inset' }, ...group.hunks.map((hunk, index) => React.createElement(Hunk, { key: index, hunk }))))
+      }
+      return React.createElement('div', { className: 'fd-section' }, header, ...body)
+    }
+
+    // ------------------------------------------------------------------ //
+    // View                                                                //
+    // ------------------------------------------------------------------ //
+    const FilesView = ({ useSession, useSessions, useConversation, sessionId, loadOlder }) => {
+      // Current harness: the assembled conversation nodes live on the Chat view
+      // target's compatibility slice (`useConversation` -> views.get('chat') ->
+      // legacy.nodes); the lifecycle snapshot (`useSession`) carries no nodes.
+      // Older harnesses exposed the nodes directly on the session snapshot, so
+      // that path is kept as a fallback.
+      const chatNodes = typeof useConversation === 'function'
+        ? useConversation((snap) => {
+          if (snap === null || snap === undefined || typeof snap !== 'object') return undefined
+          const views = snap.views
+          if (views === null || views === undefined || typeof views.get !== 'function') return undefined
+          const chat = views.get('chat')
+          if (chat === null || chat === undefined || typeof chat !== 'object') return undefined
+          const legacy = chat.legacy
+          if (legacy === null || legacy === undefined || typeof legacy !== 'object') return undefined
+          return Array.isArray(legacy.nodes) ? legacy.nodes : undefined
+        })
+        : undefined
+      const legacyNodes = typeof useSession === 'function'
+        ? useSession((snap) => (snap !== null && typeof snap === 'object' ? snap.nodes : undefined))
+        : undefined
+      const nodes = Array.isArray(chatNodes) ? chatNodes : (Array.isArray(legacyNodes) ? legacyNodes : [])
+      const hasMore = typeof useSession === 'function'
+        ? (useSession((snap) => (snap !== null && typeof snap === 'object' ? snap.hasMore : false)) ?? false)
+        : false
+      const loadingOlder = typeof useSession === 'function'
+        ? (useSession((snap) => (snap !== null && typeof snap === 'object' ? snap.loadingOlder : false)) ?? false)
+        : false
+      const cwd = useSessions((list) => list.byId[sessionId]?.cwd)
+      const scrollRef = React.useRef(null)
+      const scrollerRef = React.useRef(null)
+      const updateSticky = () => {
+        const container = scrollRef.current
+        if (container === null) return
+        const scroller = scrollerRef.current ?? container
+        const top = scroller.getBoundingClientRect().top
+        let offset = 0
+        const sectionEls = container.querySelectorAll('.fd-section-user')
+        for (let i = sectionEls.length - 1; i >= 0; i -= 1) {
+          const el = sectionEls[i]
+          if (el.getBoundingClientRect().top <= top + 1) {
+            offset = el.offsetHeight
+            break
+          }
+        }
+        container.style.setProperty('--fd-sticky-offset', `${offset}px`)
+        const stickyEls = container.querySelectorAll('.fd-change, .fd-total')
+        let stuck = null
+        const limit = top + offset + 1
+        for (const el of stickyEls) {
+          if (el.getBoundingClientRect().top <= limit) stuck = el
+        }
+        for (const el of stickyEls) {
+          if (el === stuck) el.classList.add('fd-stuck')
+          else el.classList.remove('fd-stuck')
+        }
+      }
+      React.useEffect(() => { updateSticky() })
+      React.useEffect(() => {
+        const container = scrollRef.current
+        if (container === null) return undefined
+        let scroller = null
+        let el = container
+        while (el !== null) {
+          const style = getComputedStyle(el)
+          if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
+            scroller = el
+            break
+          }
+          el = el.parentElement
+        }
+        let blocked = false
+        if (scroller !== null && scroller !== container) {
+          let cur = container.parentElement
+          while (cur !== null && cur !== scroller) {
+            const style = getComputedStyle(cur)
+            if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+              blocked = true
+              break
+            }
+            cur = cur.parentElement
+          }
+        }
+        if (blocked || scroller === null) {
+          container.style.overflow = 'auto'
+          scroller = container
+        } else {
+          container.style.overflow = 'visible'
+        }
+        scrollerRef.current = scroller
+        updateSticky()
+        const onScroll = () => updateSticky()
+        scroller.addEventListener('scroll', onScroll, { passive: true })
+        const observer = new ResizeObserver(() => updateSticky())
+        observer.observe(container)
+        if (scroller !== container) observer.observe(scroller)
+        return () => {
+          scroller.removeEventListener('scroll', onScroll)
+          observer.disconnect()
+        }
+      }, [])
+      const [mode, setMode] = React.useState(viewMode)
+      const pickMode = (next) => { viewMode = next; setMode(next) }
+
+      const model = React.useMemo(() => buildModel(nodes, cwd), [nodes, cwd])
+      const files = model.files
+
+      // Read current on-disk content of every changed file (host RPC).
+      const pathsKey = files.map((f) => f.path).join('\u0001')
+      const revKey = `${sessionId}\u0001${cwd}\u0001${nodes.length}\u0001${pathsKey}`
+      const [reads, setReads] = React.useState({ key: '', contents: new Map(), hostOk: null })
+      React.useEffect(() => {
+        if (reads.key === revKey) return
+        const contents = new Map()
+        if (remoteFiles === undefined || files.length === 0 || cwd === undefined || cwd === '') {
+          setReads({ key: revKey, contents, hostOk: false })
+          return
+        }
+        let alive = true
+        const paths = files.map((f) => f.path)
+        Promise.all(paths.map((path) => readWorkspaceFile(remoteFiles, sessionId, path))).then((values) => {
+          if (!alive) return
+          for (let i = 0; i < paths.length; i += 1) {
+            const value = values[i]
+            if (typeof value === 'string') contents.set(paths[i], canonText(value))
+          }
+          setReads({ key: revKey, contents, hostOk: true })
+        }).catch(() => {
+          if (alive) setReads({ key: revKey, contents, hostOk: false })
+        })
+        return () => { alive = false }
+      }, [revKey])
+
+      const plans = React.useMemo(() => {
+        const map = new Map()
+        for (const file of files) {
+          const disk = reads.contents.get(file.path)
+          map.set(file.path, buildPlan(file, disk === undefined ? null : disk))
+        }
+        return map
+      }, [files, reads])
+
+      // Per-message total entries for the Timeline mode: one entry per file per
+      // user-message window in which the file was changed at all.
+      const aggBySection = React.useMemo(() => {
+        const map = new Map()
+        const add = (sec, entry) => {
+          let list = map.get(sec)
+          if (list === undefined) {
+            list = []
+            map.set(sec, list)
+          }
+          list.push(entry)
+        }
+        for (const file of files) {
+          const plan = plans.get(file.path)
+          if (plan === undefined || !plan.ok) continue
+          const events = file.events
+          let runStart = 0
+          while (runStart < events.length) {
+            const sec = events[runStart].sec
+            let runEnd = runStart
+            let hunksCount = 0
+            while (runEnd < events.length && events[runEnd].sec === sec) {
+              hunksCount += events[runEnd].hunks.length
+              runEnd += 1
+            }
+            if (hunksCount >= 1) {
+              add(sec, {
+                path: file.path,
+                hunks: hunksCount,
+                before: plan.states[runStart],
+                after: plan.states[runEnd],
+              })
+            }
+            runStart = runEnd
+          }
+        }
+        return map
+      }, [files, plans])
+
+      const changeCount = mode === 'session'
+        ? model.sections.reduce((sum, section) => sum + section.changes.length, 0)
+        : files.reduce((sum, file) => sum + file.events.reduce((n, ev) => n + ev.hunks.length, 0), 0)
+      const fileCount = mode === 'session'
+        ? new Set(model.sections.flatMap((section) => section.changes.map((change) => change.path))).size
+        : files.length
+
+      const body = []
+      if (hasMore && typeof loadOlder === 'function') body.push(React.createElement('button', { key: 'older', type: 'button', className: 'fd-older', disabled: loadingOlder, onClick: () => { loadOlder() } }, loadingOlder ? 'Loading older history\u2026' : 'Load older history'))
+      body.push(React.createElement('div', { key: 'toggle', className: 'fd-toggle' },
+        React.createElement('button', { type: 'button', className: mode === 'session' ? 'fd-toggle-active' : '', onClick: () => pickMode('session') }, 'Timeline'),
+        React.createElement('button', { type: 'button', className: mode === 'file' ? 'fd-toggle-active' : '', onClick: () => pickMode('file') }, 'File')))
+      if (changeCount === 0) {
+        body.push(React.createElement('div', { key: 'empty', className: 'fd-empty' }, 'No file changes in this session.'))
+      } else {
+        body.push(React.createElement('div', { key: 'summary', className: 'fd-summary' }, `${changeCount} change${changeCount === 1 ? '' : 's'} across ${fileCount} file${fileCount === 1 ? '' : 's'}`))
+        if (mode === 'session') {
+          let number = 0
+          for (let i = 0; i < model.sections.length; i += 1) {
+            const section = model.sections[i]
+            const aggregates = aggBySection.get(i)
+            if (section.changes.length === 0 && (aggregates === undefined || aggregates.length === 0)) continue
+            body.push(React.createElement(Section, { key: `s-${i}`, section, startIndex: number, aggregates: aggregates === undefined ? [] : aggregates }))
+            number += section.changes.length
+          }
+        } else {
+          for (const file of files) {
+            const hunks = []
+            for (const ev of file.events) {
+              for (const h of ev.hunks) hunks.push(h)
+            }
+            body.push(React.createElement(FileGroup, { key: file.path, path: file.path, group: { changeCount: hunks.length, hunks, plan: plans.get(file.path) } }))
+          }
+        }
+      }
+      return React.createElement('div', { className: 'fd-view' },
+        React.createElement('div', { ref: scrollRef, className: 'fd-scroll' }, ...body))
+    }
+
+    ctx.effect(() => {
+      const style = document.createElement('style')
+      style.setAttribute('data-dsh-plugin', 'chat-timeline-diff')
+      style.textContent = CSS
+      document.head.appendChild(style)
+      return () => { style.remove() }
+    })
+
+    slots.inject('conversation.view', () => slots.register({
+      name: 'conversation.view',
+      id: 'files',
+      order: 20,
+      label: () => 'Files',
+      inject: (sessionId) => {
+        const session = ctx.sessions.binding(sessionId)?.session
+        if (session === undefined) throw new Error(`files view: session "${sessionId}" is unavailable`)
+        return {
+          loadOlder: () => session.loadOlder(),
+        }
+      },
+    }, FilesView))
+  },
+}
+
+module.exports = plugin

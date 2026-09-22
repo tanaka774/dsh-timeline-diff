@@ -790,42 +790,58 @@ return {
         const container = scrollRef.current
         if (container === null) return undefined
         let scroller = null
-        let el = container
-        while (el !== null) {
-          const style = getComputedStyle(el)
-          if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
-            scroller = el
-            break
-          }
-          el = el.parentElement
-        }
-        let blocked = false
-        if (scroller !== null && scroller !== container) {
-          let cur = container.parentElement
-          while (cur !== null && cur !== scroller) {
-            const style = getComputedStyle(cur)
-            if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
-              blocked = true
+        let onScroll = null
+        let observer = null
+        let frame = 0
+        let timer = 0
+        // Re-walk the ancestor chain after every layout change. At first mount the
+        // conversation nodes — and with them the Files content — can still be
+        // arriving, so a one-shot walk locks the view to a self-scrolling container
+        // whose scrollport never moves; the sticky headers then never pin.
+        const detect = () => {
+          let found = null
+          let el = container
+          while (el !== null) {
+            const style = getComputedStyle(el)
+            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
+              found = el
               break
             }
-            cur = cur.parentElement
+            el = el.parentElement
           }
+          let blocked = false
+          if (found !== null && found !== container) {
+            let cur = container.parentElement
+            while (cur !== null && cur !== found) {
+              const style = getComputedStyle(cur)
+              if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+                blocked = true
+                break
+              }
+              cur = cur.parentElement
+            }
+          }
+          const next = blocked || found === null ? container : found
+          container.style.overflow = next === container ? 'auto' : 'visible'
+          if (next !== scroller) {
+            if (scroller !== null && onScroll !== null) scroller.removeEventListener('scroll', onScroll)
+            scroller = next
+            scrollerRef.current = scroller
+            onScroll = () => updateSticky()
+            scroller.addEventListener('scroll', onScroll, { passive: true })
+            observer.observe(scroller)
+          }
+          updateSticky()
         }
-        if (blocked || scroller === null) {
-          container.style.overflow = 'auto'
-          scroller = container
-        } else {
-          container.style.overflow = 'visible'
-        }
-        scrollerRef.current = scroller
-        updateSticky()
-        const onScroll = () => updateSticky()
-        scroller.addEventListener('scroll', onScroll, { passive: true })
-        const observer = new ResizeObserver(() => updateSticky())
+        observer = new ResizeObserver(() => detect())
         observer.observe(container)
-        if (scroller !== container) observer.observe(scroller)
+        detect()
+        frame = requestAnimationFrame(() => { detect(); frame = requestAnimationFrame(detect) })
+        timer = setTimeout(detect, 100)
         return () => {
-          scroller.removeEventListener('scroll', onScroll)
+          if (frame !== 0) cancelAnimationFrame(frame)
+          if (timer !== 0) clearTimeout(timer)
+          if (scroller !== null && onScroll !== null) scroller.removeEventListener('scroll', onScroll)
           observer.disconnect()
         }
       }, [])

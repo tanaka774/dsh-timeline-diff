@@ -73,6 +73,19 @@ drift between rcs; re-verify on every baseline bump:
 - The `conversation.view` slot API used here is `slots.inject(key, cb)` +
   `slots.register(options, component)`.
 
+### Scroller detection must re-run after layout
+
+The view grows with its content, so `.fd-scroll` must stay `overflow: visible` and
+sticky children must bind to the session body's scrollport. The ancestor walk that
+finds that scrollport therefore runs **more than once**: on mount, on the next two
+animation frames, after a 100 ms settle, and from a `ResizeObserver`. A one-shot walk
+is not safe — on first mount the conversation nodes (and so the Files content) can
+still be arriving, the walk finds no scrollable ancestor, and the fallback sets
+`.fd-scroll { overflow: auto }`. That box grows with its content instead of scrolling,
+so `position: sticky` pins against a scrollport that never moves and every sticky
+header silently disappears. Re-detecting lets the view switch back to `visible` and
+rebind the scroll listener once the real scrollport is measurable.
+
 ## Dependencies are intentionally empty
 
 `dependencies`, `peerDependencies`, and `devDependencies` are all absent. The

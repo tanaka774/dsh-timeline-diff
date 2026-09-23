@@ -14,7 +14,8 @@ The feature is simple, you can see each file change per your conversation on you
 ## Motivation
 
 - I wanted a diff viewer as pure history of each change, which is unrelated to git or other tools.
-- I thought it would be useful in case of confirming what the previous session did if you can see each of those changes. 
+- I thought it would be useful in case of confirming what the previous session did if you can see each of those changes.
+- dsh `0.1.7-alpha.2` release has each file diff viewer per its turn on sidebar! omg
 
 ## Install
 
